@@ -31,6 +31,8 @@ CUDA 共享布局：
 - CMake、Visual C++ Build Tools 和 JUCE，用于 JUCE VST3 Host。
 - Inno Setup 6，提供 `ISCC.exe`。
 - 完整模型、引擎源码及 `assets/wheels`，或允许构建脚本重新准备 wheelhouse。
+- CUDA 包还必须有 `assets/runtime/core-cu128` 的 candidate/compat 材料；可用
+  `-RuntimeAssets C:\path\to\core-cu128` 从单独备份同步。
 
 Python 不随安装器内置。用户安装时可从检测结果中选择 CPython 3.10.x，安装器把选择写入安装目录的 `installer_env.cmd`。`uv` 无需用户预装：wheelhouse 携带启动 wheel，缺失时由安装流程安装。
 
@@ -58,6 +60,18 @@ Python 不随安装器内置。用户安装时可从检测结果中选择 CPytho
 & .\installer\build.ps1 -Stacks directml -Python "C:\Python310\python.exe"
 ```
 
+CUDA 运行时材料不在 Git 中时，先从备份同步再构建：
+
+```powershell
+& .\installer\build.ps1 -Stacks cu126 `
+  -Python "C:\Python310\python.exe" `
+  -RuntimeAssets "D:\XB-SVCB\assets\runtime\core-cu128"
+```
+
+`-RuntimeAssets` 也可以指向包含 `core-cu128` 子目录的 `assets\runtime` 目录，或通过
+环境变量 `XB_RUNTIME_ASSETS` 指定。构建器会逐个校验 candidate/compat wheel 的大小和
+SHA-256；缺少 `protobuf-7.36.0` 时会在编译 EXE 前停止。
+
 已有前端、应用、JUCE Host 和完整 wheelhouse 时，可复用它们：
 
 ```powershell
@@ -73,6 +87,14 @@ Python 不随安装器内置。用户安装时可从检测结果中选择 CPytho
 & .\installer\build-all-packages.ps1 -Python "C:\Python310\python.exe"
 ```
 
+从独立运行时备份同步材料并构建四套包：
+
+```powershell
+& .\installer\build-all-packages.ps1 `
+  -Python "C:\Python310\python.exe" `
+  -RuntimeAssets "D:\XB-SVCB\assets\runtime\core-cu128"
+```
+
 需要从头刷新全部 wheels：
 
 ```powershell
@@ -86,6 +108,8 @@ Python 不随安装器内置。用户安装时可从检测结果中选择 CPytho
 - `-RebuildWeb`：首个包前重新构建前端。
 - `-RebuildApp`：首个包前重新构建 PyInstaller 应用。
 - `-RebuildJuceHost`：首个包前重新构建 JUCE Host。
+- 默认会在首个包前重建前端、PyInstaller 应用和 JUCE Host，确保当前源码进入全部 EXE；
+  `-ReuseBuildOutputs` 才会允许复用已有构建产物。
 - `-KeepExistingInstallers`：不清理 `dist` 中旧的安装器分卷。
 
 ## Wheelhouse 与分卷

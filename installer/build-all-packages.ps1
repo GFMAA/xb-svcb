@@ -1,15 +1,16 @@
 <#
   Sequentially build the four dedicated XB-SVCB installer families.
 
-  Default behavior reuses the existing assets/wheels cache and existing
-  frontend/application/JUCE builds. Use the switches below when those inputs
-  must also be rebuilt.
+  Default behavior reuses the existing assets/wheels cache, but rebuilds the
+  frontend/application/JUCE outputs once so every installer contains current
+  source. Use -ReuseBuildOutputs only for an unchanged, already validated tree.
 
   Examples:
     ./installer/build-all-packages.ps1
     ./installer/build-all-packages.ps1 -RebuildWheelhouse
     ./installer/build-all-packages.ps1 -Python C:\Python310\python.exe
-    ./installer/build-all-packages.ps1 -RebuildWeb -RebuildApp -RebuildJuceHost
+    ./installer/build-all-packages.ps1 -RuntimeAssets D:\XB-SVCB\assets\runtime\core-cu128
+    ./installer/build-all-packages.ps1 -ReuseBuildOutputs
 #>
 
 param(
@@ -17,8 +18,10 @@ param(
   [switch]$RebuildWeb,
   [switch]$RebuildApp,
   [switch]$RebuildJuceHost,
+  [switch]$ReuseBuildOutputs,
   [switch]$KeepExistingInstallers,
-  [string]$Python
+  [string]$Python,
+  [string]$RuntimeAssets
 )
 
 $ErrorActionPreference = 'Stop'
@@ -84,9 +87,17 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 Set-Location -LiteralPath $Root
 
 Write-Host '==== Validating all four installer configurations ====' -ForegroundColor Cyan
-& $BuildScript -ValidateOnly
+$validationArgs = @{ ValidateOnly = $true }
+if ($RuntimeAssets) {
+  $validationArgs.RuntimeAssets = $RuntimeAssets
+}
+& $BuildScript @validationArgs
 $BuildPython = Resolve-Python310 $Python
 Write-Host ("Locked build Python 3.10: {0}" -f $BuildPython) -ForegroundColor Green
+
+$refreshWeb = (-not $ReuseBuildOutputs) -or $RebuildWeb
+$refreshApp = (-not $ReuseBuildOutputs) -or $RebuildApp
+$refreshJuceHost = (-not $ReuseBuildOutputs) -or $RebuildJuceHost
 
 if ($RebuildWheelhouse) {
   Write-Host "`n==== Rebuilding the complete four-stack wheelhouse ====" -ForegroundColor Cyan
@@ -132,10 +143,11 @@ for ($index = 0; $index -lt $Stacks.Count; $index++) {
   # package. The remaining packages reuse those exact staged binaries.
   $buildArgs = @{
     Stacks = $stack
+    RuntimeAssets = $RuntimeAssets
     SkipWheelhouse = $true
-    SkipWebBuild = ($index -gt 0) -or (-not $RebuildWeb)
-    SkipAppBuild = ($index -gt 0) -or (-not $RebuildApp)
-    SkipJuceHostBuild = ($index -gt 0) -or (-not $RebuildJuceHost)
+    SkipWebBuild = ($index -gt 0) -or (-not $refreshWeb)
+    SkipAppBuild = ($index -gt 0) -or (-not $refreshApp)
+    SkipJuceHostBuild = ($index -gt 0) -or (-not $refreshJuceHost)
   }
   & $BuildScript -Python $BuildPython @buildArgs
 }

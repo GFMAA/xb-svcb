@@ -89,7 +89,8 @@ Source: "..\install\build_core_compat.py"; DestDir: "{app}\install"; Flags: igno
 Source: "..\install\probe_core_compat.py"; DestDir: "{app}\install"; Flags: ignoreversion
 Source: "..\install\core_recipe.py"; DestDir: "{app}\install"; Flags: ignoreversion
 Source: "..\install\runtime_profiles\*"; DestDir: "{app}\install\runtime_profiles"; Flags: recursesubdirs createallsubdirs ignoreversion
-; Optional local compatibility artifacts; never activates the experimental profile by itself.
+; Hash-verified shared-core compatibility artifacts. The official build script
+; requires these for CUDA packages before invoking Inno Setup.
 Source: "..\assets\runtime\*"; DestDir: "{app}\assets\runtime"; Flags: recursesubdirs createallsubdirs ignoreversion nocompression skipifsourcedoesntexist
 Source: "..\install\configure_user_env.py"; DestDir: "{app}\install"; Flags: ignoreversion
 Source: "..\install\detect_python.bat"; DestDir: "{app}\install"; Flags: ignoreversion
@@ -1545,6 +1546,20 @@ begin
     Missing := AddMissingRuntimeFile(Missing, 'DeepFilterNet 配置', PathJoin(AppDir, 'assets\models\vocal-enhancement\DeepFilterNet\DeepFilterNet\Cache\DeepFilterNet3\config.ini'));
   if not FileExists(PathJoin(AppDir, 'assets\wheels\wheelhouse.json')) then
     Missing := AddMissingRuntimeFile(Missing, 'Python whl 离线依赖清单', PathJoin(AppDir, 'assets\wheels\wheelhouse.json'));
+  { CUDA shared installs need the exact candidate/compatibility wheels that
+    install_shared.py passes to uv. Keep this check at install time too, so
+    an old or incomplete split package cannot report a false overall [ok]. }
+  if (InstallerGpuStackName() = 'cu126') or (InstallerGpuStackName() = 'cu128') then
+  begin
+    if not FileExists(PathJoin(AppDir, 'assets\runtime\core-cu128\candidate\numpy-2.2.6-cp310-cp310-win_amd64.whl')) then
+      Missing := AddMissingRuntimeFile(Missing, 'CUDA 共享核心 NumPy candidate', PathJoin(AppDir, 'assets\runtime\core-cu128\candidate\numpy-2.2.6-cp310-cp310-win_amd64.whl'));
+    if not FileExists(PathJoin(AppDir, 'assets\runtime\core-cu128\candidate\protobuf-7.36.0-cp310-abi3-win_amd64.whl')) then
+      Missing := AddMissingRuntimeFile(Missing, 'CUDA 共享核心 protobuf candidate', PathJoin(AppDir, 'assets\runtime\core-cu128\candidate\protobuf-7.36.0-cp310-abi3-win_amd64.whl'));
+    if not FileExists(PathJoin(AppDir, 'assets\runtime\core-cu128\candidate\tensorboardx-2.6.5-py3-none-any.whl')) then
+      Missing := AddMissingRuntimeFile(Missing, 'CUDA 共享核心 TensorBoardX candidate', PathJoin(AppDir, 'assets\runtime\core-cu128\candidate\tensorboardx-2.6.5-py3-none-any.whl'));
+    if not FileExists(PathJoin(AppDir, 'assets\runtime\core-cu128\compat\descript_audiotools-0.7.2+xb1-py3-none-any.whl')) then
+      Missing := AddMissingRuntimeFile(Missing, 'CUDA 共享核心 AudioTools compat wheel', PathJoin(AppDir, 'assets\runtime\core-cu128\compat\descript_audiotools-0.7.2+xb1-py3-none-any.whl'));
+  end;
   if not FileExists(PathJoin(AppDir, 'engines\juce-vst3-host\xb-juce-vst3-host.exe')) then
     Missing := AddMissingRuntimeFile(Missing, 'JUCE VST3 Host', PathJoin(AppDir, 'engines\juce-vst3-host\xb-juce-vst3-host.exe'));
 

@@ -122,14 +122,8 @@ def _run_shared(args: argparse.Namespace, impl) -> int:
             # 不冒充 cu128 的固定 profile；待 cu126 完成独立锁定后再加 profile。
             impl.CORE_PROFILE = None
             impl.CORE_PROFILE_PINS = {}
-            impl.CORE_COMPAT_WHEEL = (
-                impl.ASSETS_DIR
-                / "runtime"
-                / "core-cu128"
-                / "compat"
-                / "descript_audiotools-0.7.2+xb1-py3-none-any.whl"
-            )
-            impl._validate_core_compat_wheel(impl.CORE_COMPAT_WHEEL)
+            impl.CORE_PROFILE_WHEEL_DIRS = ()
+            impl._configure_core_compatibility_materials()
         impl._configure_runtime_layout(consolidated=True, gpu_stack=stack)
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
         print(impl.c("r", f"共享配方初始化失败：{exc}"))
@@ -214,13 +208,16 @@ def _run_shared(args: argparse.Namespace, impl) -> int:
             if CORE_COMPONENTS.intersection(selected_set):
                 core_py = impl.venv_python(impl.CORE_VENV)
                 impl.run(impl.uv_cmd(uv, "pip", "check", "--python", str(core_py)))
-                recipe_check = impl._recipe_module().check_environment(
-                    core_py, impl.CORE_PROFILE, impl.CORE_PROFILE_PINS
-                )
-                if not recipe_check["ok"]:
-                    raise RuntimeError(
-                        "共享环境偏离固定配方：" + json.dumps(recipe_check, ensure_ascii=False)
+                # cu128 uses the fixed, hashed recipe. cu126 currently reuses
+                # the compatibility materials without claiming that profile.
+                if impl.CORE_PROFILE is not None:
+                    recipe_check = impl._recipe_module().check_environment(
+                        core_py, impl.CORE_PROFILE, impl.CORE_PROFILE_PINS
                     )
+                    if not recipe_check["ok"]:
+                        raise RuntimeError(
+                            "共享环境偏离固定配方：" + json.dumps(recipe_check, ensure_ascii=False)
+                        )
                 impl.run([
                     str(core_py),
                     str(Path(impl.__file__).with_name("audit_runtime.py")),

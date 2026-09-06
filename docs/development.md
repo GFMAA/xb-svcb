@@ -57,13 +57,17 @@
 
     .\installer\build-all-packages.ps1 -Python C:\path\to\python.exe
 
+CUDA 包使用 Git 外部保存的共享核心材料时，构建命令需要额外指定材料目录：
+
+    .\installer\build-all-packages.ps1 -Python C:\path\to\python.exe -RuntimeAssets D:\XB-SVCB\assets\runtime\core-cu128
+
 构建流程大致为：
 
 1. 校验应用、前端、版本号和关键运行载荷。
-2. 构建 Vue 前端。
-3. 使用 PyInstaller 生成桌面应用及其内置资源。
+2. 构建 Vue 前端，并在四套包之间复用同一份结果。
+3. 使用 PyInstaller 生成桌面应用及其内置资源，并在四套包之间复用同一份结果。
 4. 构建或复用 JUCE VST3 Host。
-5. 按目标硬件栈筛选离线 wheelhouse 和运行环境载荷。
+5. 按目标硬件栈筛选离线 wheelhouse，校验 CUDA candidate/compat 材料和运行环境载荷。
 6. 使用 Inno Setup 生成硬件专用 EXE 和多个小于 2GB 的同名前缀 `.bin` 分卷。
 
 发布时必须同时上传 EXE 和全部 BIN 文件。安装器说明、运行环境列表和分卷规则见 installer/README.md。

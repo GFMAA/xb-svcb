@@ -81,7 +81,7 @@ networkx==3.4.2
 numba==0.67.0
 numpy==2.2.6
 omegaconf==2.3.1
-onnx-weekly==1.23.0.dev20260824
+onnx-weekly==1.23.0.dev20260831
 onnx2torch-py313==1.6.0
 onnxruntime-gpu==1.23.2
 oss2==2.19.1

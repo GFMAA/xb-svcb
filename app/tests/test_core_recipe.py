@@ -24,6 +24,7 @@ def test_checked_in_profile_is_portable_and_pins_all_versions():
     assert pins["torch"] == "2.7.1+cu128"
     assert pins["numpy"] == "2.2.6"
     assert pins["protobuf"] == "7.36.0"
+    assert pins["onnx-weekly"] == "1.23.0.dev20260831"
     assert profile["optional_packages"] == ["hf-xet"]
     assert not profile["rollback_is_known_healthy"]
     assert not profile["full_model_inference_validated"]
@@ -105,6 +106,7 @@ def test_profile_preflight_uses_every_pin_and_package_specific_torch_source(tmp_
         assert "--no-build" in command and "--no-python-downloads" in command
         inputs = Path(command[3]).read_text(encoding="utf-8")
         assert "numpy==2.2.6" in inputs and "torch==2.7.1+cu128" in inputs
+        assert "onnx-weekly==1.23.0.dev20260831" in inputs
         Path(command[command.index("--output-file") + 1]).write_text("numpy==2.2.6\ntorch==2.7.1+cu128\n")
 
     monkeypatch.setattr(installer, "run", compile_only)
@@ -128,6 +130,34 @@ def test_profile_pip_uses_same_torch_routing_and_lock(tmp_path, monkeypatch):
     assert str(installer.CORE_CONSTRAINTS) in calls[0]
     assert "--torch-backend" in calls[0] and "--reinstall" not in calls[0]
     assert installer.TORCH_BLACKWELL_INDEX not in calls[0]
+
+
+def test_cu126_compatibility_materials_add_candidate_and_compat_links(tmp_path, monkeypatch):
+    installer = load("install")
+    installer._derive_paths(tmp_path)
+    candidate = tmp_path / "assets/runtime/core-cu128/candidate/numpy.whl"
+    compat = tmp_path / "assets/runtime/core-cu128/compat/audiotools.whl"
+    candidate.parent.mkdir(parents=True)
+    compat.parent.mkdir(parents=True)
+    candidate.touch()
+    compat.touch()
+    pins = {
+        requirement.split("==", 1)[0].lower(): requirement.split("==", 1)[1]
+        for requirement in installer.CORE_COMPAT_PACKAGES
+    }
+    recipe = SimpleNamespace(
+        load_profile=lambda: ({"compatibility_wheel": "compat.whl"}, pins),
+        verify_artifacts=lambda *_args: [candidate, compat],
+        contained=lambda *_args: compat,
+    )
+    monkeypatch.setattr(installer, "_recipe_module", lambda: recipe)
+    monkeypatch.setattr(installer, "_validate_core_compat_wheel", lambda path: None)
+
+    installer._configure_core_compatibility_materials()
+
+    assert installer.CORE_PROFILE is None
+    assert installer.CORE_COMPAT_WHEEL == compat
+    assert installer._core_recipe_find_links() == [candidate.parent, compat.parent]
 
 
 def test_recipe_files_are_packaged():

@@ -23,6 +23,7 @@
     ./installer/build.ps1 -SkipWheelhouse   # skip only when assets/wheels is already prepared
     ./installer/build.ps1 -Stacks cu126     # build one hardware-specific package
     ./installer/build.ps1 -Stacks cu128 -Python C:\Python310\python.exe
+    ./installer/build.ps1 -Stacks cu126 -RuntimeAssets D:\XB-SVCB\assets\runtime\core-cu128
     ./installer/build.ps1 -Stacks directml
     ./installer/build.ps1 -Stacks cu128 -BootstrapperOnly # refresh only this package EXE
     ./installer/build.ps1 -ValidateOnly     # validate scripts without packaging models
@@ -36,6 +37,7 @@ param(
   [ValidateSet('cpu', 'directml', 'cu126', 'cu128')]
   [string[]]$Stacks,
   [string]$Python,
+  [string]$RuntimeAssets,
   [switch]$BootstrapperOnly,
   [switch]$ValidateOnly
 )
@@ -72,6 +74,16 @@ function Require-File([string]$Path, [string]$Label) {
   }
 }
 
+function Require-MatchingFile([string]$Source, [string]$Destination, [string]$Label) {
+  Require-File $Source "$Label source"
+  Require-File $Destination "$Label staged copy"
+  $sourceHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash.ToLowerInvariant()
+  $destinationHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($sourceHash -ne $destinationHash) {
+    throw "$Label is stale; source and staged copy differ: $Source -> $Destination"
+  }
+}
+
 function Require-WorkerContract([string]$Path, [string]$Label, [string[]]$Required, [string[]]$Forbidden) {
   Require-File $Path $Label
   $content = Get-Content -LiteralPath $Path -Raw
@@ -102,6 +114,140 @@ function Require-WindowsLineEndings([string]$Path, [string]$Label) {
     if ($bytes[$index] -eq 10 -and ($index -eq 0 -or $bytes[$index - 1] -ne 13)) {
       throw "$Label contains a bare LF line ending; normalize the complete batch file to CRLF before packaging: $Path"
     }
+  }
+}
+
+function Assert-CoreRuntimeAssets {
+  <#
+    The cu126 installer uses the same verified NumPy/protobuf/AudioTools
+    compatibility materials as the cu128 recipe. Inno's
+    skipifsourcedoesntexist flag is intentionally not trusted here: a missing
+    wheel must stop the build before an unusable EXE is produced.
+  #>
+  $profilePath = Join-Path $Root 'install\runtime_profiles\core-cu128\profile.json'
+  Require-File $profilePath 'Shared core runtime profile'
+  $coreProfile = Get-Content -LiteralPath $profilePath -Raw | ConvertFrom-Json
+  if ($coreProfile.schema -ne 1 -or $coreProfile.id -ne 'core-cu128') {
+    throw "Unsupported shared core runtime profile: $profilePath"
+  }
+
+  $lockPath = Join-Path (Split-Path -Parent $profilePath) ([string]$coreProfile.lock)
+  Require-File $lockPath 'Shared core lock file'
+  $lockHash = (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($lockHash -ne ([string]$coreProfile.lock_sha256).ToLowerInvariant()) {
+    throw "Shared core lock hash mismatch: $lockPath"
+  }
+
+  $rootFull = ([IO.Path]::GetFullPath($Root)).TrimEnd('\') + '\'
+  $runtimeArtifacts = @(
+    $coreProfile.artifacts | Where-Object { $_.group -in @('candidate', 'compat') }
+  )
+  if ($runtimeArtifacts.Count -eq 0) {
+    throw "Shared core profile has no candidate/compatibility artifacts: $profilePath"
+  }
+
+  $seen = @{}
+  foreach ($artifact in $runtimeArtifacts) {
+    $relative = [string]$artifact.path
+    if ([IO.Path]::IsPathRooted($relative)) {
+      throw "Shared core artifact path must be relative: $relative"
+    }
+    $resolved = [IO.Path]::GetFullPath((Join-Path $Root $relative))
+    if (-not $resolved.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Shared core artifact escapes the source tree: $relative"
+    }
+    if ($seen.ContainsKey($resolved)) {
+      throw "Shared core profile contains a duplicate artifact path: $relative"
+    }
+    $seen[$resolved] = $true
+    Require-File $resolved ("Shared core artifact " + $relative)
+    $item = Get-Item -LiteralPath $resolved
+    if ([long]$item.Length -ne [long]$artifact.bytes) {
+      throw "Shared core artifact size mismatch: $resolved ($($item.Length) bytes; expected $($artifact.bytes))"
+    }
+    $actualHash = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne ([string]$artifact.sha256).ToLowerInvariant()) {
+      throw "Shared core artifact SHA-256 mismatch: $resolved"
+    }
+  }
+
+  # Keep the exact files visible in the build log/error, especially the wheel
+  # whose absence caused the previous cu126 EXE to fail during uv resolution.
+  $requiredRelative = @(
+    'assets/runtime/core-cu128/candidate/numpy-2.2.6-cp310-cp310-win_amd64.whl',
+    'assets/runtime/core-cu128/candidate/protobuf-7.36.0-cp310-abi3-win_amd64.whl',
+    'assets/runtime/core-cu128/candidate/tensorboardx-2.6.5-py3-none-any.whl',
+    'assets/runtime/core-cu128/compat/descript_audiotools-0.7.2+xb1-py3-none-any.whl'
+  )
+  foreach ($relative in $requiredRelative) {
+    $resolved = [IO.Path]::GetFullPath((Join-Path $Root $relative))
+    if (-not $seen.ContainsKey($resolved)) {
+      throw "Shared core profile does not declare required artifact: $relative"
+    }
+  }
+  Write-Host ("Verified {0} hash-checked shared core candidate/compatibility wheels." -f $runtimeArtifacts.Count) -ForegroundColor Green
+}
+
+function Ensure-CoreRuntimeAssets([string]$SourcePath) {
+  if ([string]::IsNullOrWhiteSpace($SourcePath)) {
+    $SourcePath = $env:XB_RUNTIME_ASSETS
+  }
+  if ([string]::IsNullOrWhiteSpace($SourcePath)) {
+    return
+  }
+
+  $source = [IO.Path]::GetFullPath($SourcePath)
+  if (Test-Path -LiteralPath (Join-Path $source 'core-cu128') -PathType Container) {
+    $source = Join-Path $source 'core-cu128'
+  }
+  if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+    throw "Runtime assets source directory not found: $source"
+  }
+
+  $destination = [IO.Path]::GetFullPath((Join-Path $Root 'assets\runtime\core-cu128'))
+  if ($source.TrimEnd('\') -ieq $destination.TrimEnd('\')) {
+    return
+  }
+  New-Item -ItemType Directory -Force -Path $destination | Out-Null
+  foreach ($group in @('candidate', 'compat', 'rollback')) {
+    $sourceGroup = Join-Path $source $group
+    if (-not (Test-Path -LiteralPath $sourceGroup -PathType Container)) {
+      continue
+    }
+    $destinationGroup = Join-Path $destination $group
+    New-Item -ItemType Directory -Force -Path $destinationGroup | Out-Null
+    Get-ChildItem -LiteralPath $sourceGroup -File -Force | ForEach-Object {
+      Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destinationGroup $_.Name) -Force
+    }
+  }
+  Write-Host ("Synchronized shared core runtime materials from {0}" -f $source) -ForegroundColor Cyan
+}
+
+function Assert-AppPayloadFresh {
+  $appExe = Join-Path $Root 'dist\XB-SVCB\XB-SVCB.exe'
+  Require-File $appExe 'Staged app executable'
+  $sourceRoots = @(
+    (Join-Path $Root 'app\api'),
+    (Join-Path $Root 'app\application'),
+    (Join-Path $Root 'app\domain'),
+    (Join-Path $Root 'app\infrastructure'),
+    (Join-Path $Root 'app\main.py'),
+    (Join-Path $Root 'app\config.py'),
+    (Join-Path $Root 'installer\xb-svcb-app.spec')
+  )
+  $sourceFiles = @()
+  foreach ($sourceRoot in $sourceRoots) {
+    if (Test-Path -LiteralPath $sourceRoot -PathType Container) {
+      $sourceFiles += @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Filter '*.py')
+    } elseif (Test-Path -LiteralPath $sourceRoot -PathType Leaf) {
+      $sourceFiles += @(Get-Item -LiteralPath $sourceRoot)
+    }
+  }
+  $outputTime = (Get-Item -LiteralPath $appExe).LastWriteTimeUtc
+  $newer = @($sourceFiles | Where-Object { $_.LastWriteTimeUtc -gt $outputTime })
+  if ($newer.Count -gt 0) {
+    $sample = ($newer | Select-Object -First 3 | ForEach-Object { $_.FullName }) -join ', '
+    throw "Staged app executable is older than current source ($sample). Remove -SkipAppBuild or rebuild the application before packaging."
   }
 }
 
@@ -442,8 +588,19 @@ Require-File (Join-Path $Root "install\detect_python.bat") "Python runtime detec
 Require-File (Join-Path $Root "install\prepare_wheelhouse.py") "Wheelhouse preparation script"
 $installScriptPath = Join-Path $Root "install\install.py"
 Require-File $installScriptPath "Runtime installer"
-if ((Get-Content -LiteralPath $installScriptPath -Raw) -notmatch 'def python_spec_for_venv\(uv: str, python_version: str\)') {
+$installSource = Get-Content -LiteralPath $installScriptPath -Raw
+if ($installSource -notmatch 'def python_spec_for_venv\(uv: str, python_version: str\)') {
   throw "Runtime installer is missing the concrete Python-path fix; refusing to build an installer with uv --python 3.10 resolution."
+}
+$runtimeInstallerDeclarations = @(
+  'CORE_COMPAT_WHEEL_DIRS: tuple[Path, ...] = ()',
+  'def _configure_core_compatibility_materials() -> None:',
+  'onnx-weekly==1.23.0.dev20260831'
+)
+foreach ($declaration in $runtimeInstallerDeclarations) {
+  if ($installSource -notmatch [regex]::Escape($declaration)) {
+    throw "Runtime installer is missing the synchronized shared-core fix: '$declaration'."
+  }
 }
 $sharedInstallScriptPath = Join-Path $Root "install\install_shared.py"
 Require-File $sharedInstallScriptPath "Shared runtime installer"
@@ -452,6 +609,8 @@ $sharedRuntimeDeclarations = [ordered]@{
   'cu126 selector' = 'add_argument\("--cu126"'
   'cu128 selector' = 'add_argument\("--cu128"'
   'core-cu128 profile' = '"core-cu128"'
+  'cu126 candidate material activation' = '_configure_core_compatibility_materials\(\)'
+  'profile-only post-install check' = 'if impl\.CORE_PROFILE is not None:'
   'two-layer shared layout' = '_configure_runtime_layout\(consolidated=True,\s*gpu_stack=stack\)'
 }
 foreach ($declaration in $sharedRuntimeDeclarations.GetEnumerator()) {
@@ -482,9 +641,25 @@ function Assert-WheelhouseProfile([string]$SelectedStack) {
   if (Test-Path -LiteralPath $legacy) {
     throw "旧 cu121 wheelhouse remains: $legacy. Run the cleanup command before packaging."
   }
+  if ($SelectedStack -in @('cu126', 'cu128')) {
+    foreach ($name in @(
+      'onnx_weekly-1.23.0.dev20260831-cp310-cp310-win_amd64.whl',
+      'numpy-2.2.6-cp310-cp310-win_amd64.whl',
+      'tensorboardx-2.6.5-py3-none-any.whl'
+    )) {
+      Require-File (Join-Path $wheelRoot ("py310\{0}\{1}" -f $SelectedStack, $name)) `
+        ("$SelectedStack wheelhouse candidate $name")
+    }
+  }
 }
 if ((Get-Content -LiteralPath $installScriptPath -Raw) -notmatch 'def _resolved_file_path\(path: Path\) -> Path \| None:') {
   throw "Runtime installer is missing Junction resolution; refusing to build an installer that may pass a Windows mount point to uv."
+}
+
+$assetValidationStacks = if ($packageStack) { @($packageStack) } else { @('cpu', 'directml', 'cu126', 'cu128') }
+if (@($assetValidationStacks | Where-Object { $_ -in @('cu126', 'cu128') }).Count -gt 0) {
+  Ensure-CoreRuntimeAssets $RuntimeAssets
+  Assert-CoreRuntimeAssets
 }
 $licensePath = Join-Path $Root "LICENSE"
 Require-File $licensePath "GPLv3 license"
@@ -646,16 +821,23 @@ if (-not $SkipAppBuild) {
   }
   & $venvPy -c "import PyInstaller; print('PyInstaller ' + getattr(PyInstaller, '__version__', 'unknown'))"
   if ($LASTEXITCODE -ne 0) { throw "PyInstaller is unavailable in app/.venv after installation" }
-  & $venvPy -m PyInstaller (Join-Path $Root "installer\xb-svcb-app.spec") --noconfirm --distpath (Join-Path $Root "dist") --workpath (Join-Path $Root "build")
+  & $venvPy -m PyInstaller (Join-Path $Root "installer\xb-svcb-app.spec") --clean --noconfirm --distpath (Join-Path $Root "dist") --workpath (Join-Path $Root "build")
   if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed (exit code $LASTEXITCODE)" }
 }
 Require-File (Join-Path $Root "dist\XB-SVCB\XB-SVCB.exe") "Staged app executable (build without -SkipAppBuild)"
+if ($SkipAppBuild) {
+  Assert-AppPayloadFresh
+}
 
 # PyInstaller data files must be present on disk for the external AI environments.
 $stagedInternal = Join-Path $Root "dist\XB-SVCB\_internal"
 Require-File (Join-Path $stagedInternal "web\dist\index.html") "Staged frontend entry"
 foreach ($worker in $workerFiles) {
   Require-File (Join-Path $stagedInternal "infrastructure\$worker") "Staged worker $worker"
+  Require-MatchingFile `
+    (Join-Path $Root "app\infrastructure\$worker") `
+    (Join-Path $stagedInternal "infrastructure\$worker") `
+    "Staged worker $worker"
 }
 Require-WorkerContract `
   (Join-Path $stagedInternal "infrastructure\f0_worker.py") `

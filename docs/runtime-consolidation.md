@@ -58,6 +58,10 @@ CUDA128 的固定核心配方位于：
 
 `install/prepare_wheelhouse.py` 准备四栈缓存，`installer/stage_wheelhouse.py` 在构建专用包时只暂存目标栈需要的 wheels。运行环境全部校验通过后，安装器删除用户安装目录中的 `assets/wheels`；如果失败则保留，便于离线重试。
 
+CUDA 安装包构建还必须携带 `assets/runtime/core-cu128/candidate` 和 `compat`。这些二进制
+材料不提交 Git，可在构建时用 `installer/build.ps1 -RuntimeAssets <备份目录>` 同步；构建器
+会校验 profile 锁文件及每个 wheel 的 SHA-256，避免把缺少 `protobuf==7.36.0` 的包发布出去。
+
 ## 原子安装与激活
 
 共享安装遵守以下边界：

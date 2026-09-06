@@ -305,10 +305,11 @@ CORE_COMPAT_WHEEL: Path | None = None
 CORE_PROFILE: dict | None = None
 CORE_PROFILE_PINS: dict[str, str] = {}
 CORE_PROFILE_WHEEL_DIRS: tuple[Path, ...] = ()
+CORE_COMPAT_WHEEL_DIRS: tuple[Path, ...] = ()
 # Experimental, locally tested candidate. Never applied to isolated runtimes.
 CORE_COMPAT_PACKAGES = (
     "numpy==2.2.6", "protobuf==7.36.0", "tensorboardX==2.6.5",
-    "tensorboard==2.20.0", "onnx-weekly==1.23.0.dev20260824",
+    "tensorboard==2.20.0", "onnx-weekly==1.23.0.dev20260831",
 )
 
 
@@ -330,8 +331,10 @@ def _recipe_module():
 
 def _configure_core_profile(name: str | None) -> None:
     global CORE_PROFILE, CORE_PROFILE_PINS, CORE_COMPAT_WHEEL, CORE_PROFILE_WHEEL_DIRS
+    global CORE_COMPAT_WHEEL_DIRS
     CORE_PROFILE, CORE_PROFILE_PINS = None, {}
     CORE_PROFILE_WHEEL_DIRS = ()
+    CORE_COMPAT_WHEEL_DIRS = ()
     if name is None:
         return
     recipe = _recipe_module()
@@ -356,9 +359,36 @@ def _validate_core_compat_wheel(path: Path) -> None:
         raise ValueError("AudioTools 兼容 wheel 不匹配已验证的实验配方")
 
 
+def _configure_core_compatibility_materials() -> None:
+    """Verify and activate candidate/compat wheels without claiming a cu128 profile."""
+    global CORE_COMPAT_WHEEL, CORE_COMPAT_WHEEL_DIRS
+
+    recipe = _recipe_module()
+    profile, pins = recipe.load_profile()
+    expected = {
+        name.lower().replace("_", "-"): version
+        for requirement in CORE_COMPAT_PACKAGES
+        for name, version in (requirement.split("==", 1),)
+    }
+    drifted = sorted(
+        name for name, version in expected.items() if pins.get(name) != version
+    )
+    if drifted:
+        raise ValueError("共享兼容材料与固定配方版本不一致：" + ", ".join(drifted))
+
+    artifacts = recipe.verify_artifacts(ROOT, profile, {"candidate", "compat"})
+    compatibility_wheel = recipe.contained(ROOT, profile["compatibility_wheel"])
+    try:
+        _validate_core_compat_wheel(compatibility_wheel)
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"AudioTools 兼容 wheel 已损坏：{compatibility_wheel}") from exc
+    CORE_COMPAT_WHEEL = compatibility_wheel
+    CORE_COMPAT_WHEEL_DIRS = tuple(dict.fromkeys(path.parent for path in artifacts))
+
+
 def _core_recipe_find_links() -> list[Path]:
     """Return verified local candidate/compat directories for shared core installs."""
-    directories = list(CORE_PROFILE_WHEEL_DIRS)
+    directories = [*CORE_PROFILE_WHEEL_DIRS, *CORE_COMPAT_WHEEL_DIRS]
     if CORE_COMPAT_WHEEL is not None:
         directories.append(CORE_COMPAT_WHEEL.parent)
     return list(dict.fromkeys(directories))
@@ -3326,15 +3356,8 @@ def main() -> int:
         return 2
     elif CONSOLIDATED_RUNTIME:
         if detected_stack == "cu126" and CORE_COMPAT_WHEEL is None:
-            CORE_COMPAT_WHEEL = (
-                ASSETS_DIR
-                / "runtime"
-                / "core-cu128"
-                / "compat"
-                / "descript_audiotools-0.7.2+xb1-py3-none-any.whl"
-            )
             try:
-                _validate_core_compat_wheel(CORE_COMPAT_WHEEL)
+                _configure_core_compatibility_materials()
             except (OSError, ValueError, zipfile.BadZipFile) as exc:
                 print(c("r", f"cu126 共享兼容材料不可用：{exc}"))
                 return 1

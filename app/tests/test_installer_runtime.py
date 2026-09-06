@@ -475,11 +475,53 @@ def test_shared_preflight_only_compiles_and_preserves_source_requirements(tmp_pa
     assert not (installer.SEEDVC_DIR / "requirements_xb.txt").exists()
 
 
+def test_shared_cu126_skips_profile_check_when_no_profile_is_selected():
+    source = (ROOT / "install" / "install_shared.py").read_text(encoding="utf-8")
+    assert "impl._configure_core_compatibility_materials()" in source
+    assert (
+        "if impl.CORE_PROFILE is not None:\n"
+        "                    recipe_check = impl._recipe_module().check_environment("
+    ) in source
+
+
 def test_shared_preflight_rejects_partial_groups(tmp_path, monkeypatch):
     installer = _shared_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(installer, "run", lambda cmd: pytest.fail("unexpected install"))
     with pytest.raises(RuntimeError, match="一起验证"):
         installer._preflight_consolidated_runtime("uv", {"uvr"}, "cu128")
+
+
+def test_shared_cu126_preflight_passes_candidate_and_compat_links(tmp_path, monkeypatch):
+    installer = _shared_fixture(tmp_path, monkeypatch)
+    candidate = tmp_path / "runtime" / "candidate"
+    compat = tmp_path / "runtime" / "compat"
+    candidate.mkdir(parents=True)
+    compat.mkdir(parents=True)
+    compatibility_wheel = compat / "descript_audiotools-0.7.2+xb1-py3-none-any.whl"
+    compatibility_wheel.write_bytes(b"test wheel")
+
+    monkeypatch.setattr(installer, "CORE_COMPAT_WHEEL", compatibility_wheel)
+    monkeypatch.setattr(installer, "CORE_COMPAT_WHEEL_DIRS", (candidate, compat))
+    monkeypatch.setattr(installer, "_validate_core_compat_wheel", lambda path: None)
+    commands = []
+
+    def fake_run(command):
+        commands.append(command)
+        output = Path(command[command.index("--output-file") + 1])
+        output.write_text("numpy==2.2.6\n", encoding="utf-8")
+
+    monkeypatch.setattr(installer, "run", fake_run)
+    installer._preflight_consolidated_runtime("uv", installer.CORE_COMPONENTS, "cu126")
+
+    assert len(commands) == 1
+    command = commands[0]
+    links = {
+        Path(command[index + 1]).resolve()
+        for index, value in enumerate(command)
+        if value == "--find-links"
+    }
+    assert candidate.resolve() in links
+    assert compat.resolve() in links
 
 
 def test_main_stops_before_install_on_shared_resolution_failure(tmp_path, monkeypatch):
@@ -715,6 +757,25 @@ def test_installer_packages_and_uses_bundled_wheelhouse() -> None:
     assert "if DelTree(WheelhouseDir, True, True, True) then" in script
     assert 'set "XB_WHEELHOUSE="' in setup_env
     assert 'set "XB_WHEELHOUSE_STRICT=0"' in setup_env
+    assert "assets\\runtime\\core-cu128\\candidate\\protobuf-7.36.0-cp310-abi3-win_amd64.whl" in script
+    assert "assets\\runtime\\core-cu128\\compat\\descript_audiotools-0.7.2+xb1-py3-none-any.whl" in script
+
+
+def test_release_builder_enforces_current_runtime_materials_and_app_build() -> None:
+    build = (ROOT / "installer" / "build.ps1").read_text(encoding="utf-8")
+    build_all = (ROOT / "installer" / "build-all-packages.ps1").read_text(encoding="utf-8")
+
+    assert "function Assert-CoreRuntimeAssets" in build
+    assert "CORE_COMPAT_WHEEL_DIRS: tuple[Path, ...] = ()" in build
+    assert "onnx-weekly==1.23.0.dev20260831" in build
+    assert "Get-FileHash" in build
+    assert "assets/runtime/core-cu128/candidate/protobuf-7.36.0" in build
+    assert "[string]$RuntimeAssets" in build
+    assert "Ensure-CoreRuntimeAssets $RuntimeAssets" in build
+    assert "[string]$RuntimeAssets" in build_all
+    assert "RuntimeAssets = $RuntimeAssets" in build_all
+    assert "[switch]$ReuseBuildOutputs" in build_all
+    assert "$refreshApp = (-not $ReuseBuildOutputs) -or $RebuildApp" in build_all
 
 
 def test_wheelhouse_binary_download_uses_managed_tool_python(
