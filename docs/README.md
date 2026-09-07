@@ -14,6 +14,7 @@
 - [启动与推理链路](startup-chain.md)：从 app/main.py 启动到一次普通任务和实时任务完成的过程。
 - [开发与发布](development.md)：代码结构、测试、前端构建、JUCE Host 和安装包构建。
 - [安装器说明](../installer/README.md)：PyInstaller、运行环境、离线 wheelhouse 和 Inno Setup 分卷。
+- [共享运行时与兼容布局](runtime-consolidation.md)：CUDA 两层共享环境、CPU/DirectML 兼容布局、路由与修复边界。
 
 ## 插件作者
 
@@ -26,8 +27,9 @@
 - [系统架构图](archify/xb-svcb-system.architecture.html)
 - [系统架构图 JSON](archify/xb-svcb-system.architecture.json)
 - [启动与推理时序图](archify/xb-svcb-startup-inference.sequence.html)
-- [启动链路图](startup-chain.html)
 
 ## 版本记录
 
 历史更新说明集中在 [release-notes/](release-notes/)。新增版本建议继续使用 release_notes_vXYZ.md 命名，并在根 README 只链接当前版本。
+
+- [v0.0.31 更新说明](release-notes/release_notes_v031.md)：共享运行时、首次引导与高音/美声稳定性。
