@@ -57,12 +57,32 @@ export interface SystemStatus {
 
 export type HttpApiScope = 'local' | 'lan'
 
+export interface HttpApiKey {
+  id: string
+  name: string
+  secret: string
+  enabled: boolean
+  expires_at?: string | null
+  created_at: string
+  expired?: boolean
+}
+
+export interface HttpApiKeyResult {
+  ok: boolean
+  key?: HttpApiKey
+  items?: HttpApiKey[]
+  error?: string
+}
+
 export interface HttpApiStatus {
   running: boolean
   scope: HttpApiScope
   host: string
   port: number
+  domain: string
+  domain_url: string
   api_key: string
+  api_keys: HttpApiKey[]
   base_urls: string[]
   docs_url: string
   redoc_url: string

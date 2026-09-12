@@ -107,6 +107,18 @@ class Api:
     def regenerate_http_api_key(self) -> dict[str, Any]:
         return self._http_api.regenerate_key()
 
+    def list_http_api_keys(self) -> dict[str, Any]:
+        return self._http_api.list_keys()
+
+    def create_http_api_key(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._http_api.create_key(payload or {})
+
+    def update_http_api_key(self, key_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._http_api.update_key(key_id, payload or {})
+
+    def delete_http_api_key(self, key_id: str) -> dict[str, Any]:
+        return self._http_api.delete_key(key_id)
+
     def start_http_api(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._http_api.start(payload or {})
 
