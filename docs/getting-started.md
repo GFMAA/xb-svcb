@@ -28,7 +28,52 @@ CPU/DirectML 使用 `.venv-uvr`、`.venv-svc`、`.venv-rvc`、`.venv-seedvc`、`
 
 完整布局和旧安装兼容规则见 [共享运行时与兼容布局](runtime-consolidation.md)。
 
-## 修复安装包环境
+
+## 0.0.31版本50系显卡安装失败将请先在shell中执行如下代码
+```powershell
+Set-Location '安装目录'
+
+$lock = Join-Path (Get-Location) 'install\runtime_profiles\core-cu128\requirements.lock'
+$profile = Join-Path (Get-Location) 'install\runtime_profiles\core-cu128\profile.json'
+
+if (!(Test-Path -LiteralPath $lock) -or !(Test-Path -LiteralPath $profile)) {
+    throw '找不到 core-cu128 配方文件，请确认当前目录是 安装目录地址'
+}
+
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+
+Copy-Item -LiteralPath $lock -Destination ($lock + '.bak') -Force
+Copy-Item -LiteralPath $profile -Destination ($profile + '.bak') -Force
+
+$text = [System.IO.File]::ReadAllText($lock)
+
+if ($text -notmatch '(?m)^gin-config==') {
+    $match = [regex]::Match($text, '(?m)^fsspec==[^\r\n]*')
+    if (!$match.Success) {
+        throw '锁文件格式不符合预期'
+    }
+
+    $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $text = $text.Insert(
+        $match.Index + $match.Length,
+        $newline + 'gin-config==0.5.0'
+    )
+
+    [System.IO.File]::WriteAllText($lock, $text, $utf8)
+}
+
+$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $lock).Hash.ToLowerInvariant()
+$json = [System.IO.File]::ReadAllText($profile) | ConvertFrom-Json
+$json.lock_sha256 = $hash
+
+[System.IO.File]::WriteAllText(
+    $profile,
+    ($json | ConvertTo-Json -Depth 10),
+    $utf8
+)
+
+.\setup_env.bat
+```
 
 从开始菜单运行“搭建/修复运行环境”，或在安装目录执行：
 

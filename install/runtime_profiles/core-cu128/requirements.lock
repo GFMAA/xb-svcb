@@ -39,6 +39,7 @@ flatbuffers==25.12.19
 flatten-dict==0.5.0
 fonttools==4.63.0
 fsspec==2026.7.0
+gin-config==0.5.0
 funasr==1.1.5
 grpcio==1.83.1
 hf-xet==1.6.0

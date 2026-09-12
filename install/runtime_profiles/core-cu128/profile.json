@@ -6,7 +6,7 @@
   "python": "3.10",
   "platform": "win_amd64",
   "lock": "requirements.lock",
-  "lock_sha256": "328400565a43ad2b78aeea93761d3ee6f863e08ad11af56df0f167fe5a2230c7",
+  "lock_sha256": "dd95d74cd428d35d8559625ebb471b9a92219fa45af3898d02bc2ce19ba81805",
   "optional_packages": [
     "hf-xet"
   ],

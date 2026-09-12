@@ -20,11 +20,12 @@ def load(name):
 def test_checked_in_profile_is_portable_and_pins_all_versions():
     recipe = load("core_recipe")
     profile, pins = recipe.load_profile()
-    assert len(pins) == 147
+    assert len(pins) == 148
     assert pins["torch"] == "2.7.1+cu128"
     assert pins["numpy"] == "2.2.6"
     assert pins["protobuf"] == "7.36.0"
     assert pins["onnx-weekly"] == "1.23.0.dev20260831"
+    assert pins["gin-config"] == "0.5.0"
     assert profile["optional_packages"] == ["hf-xet"]
     assert not profile["rollback_is_known_healthy"]
     assert not profile["full_model_inference_validated"]
