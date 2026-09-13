@@ -38,7 +38,7 @@
       >
         <el-icon class="dz-icon"><UploadFilled /></el-icon>
         <p class="dz-main">拖拽音频到此处</p>
-        <p class="dz-sub">支持 MP3 / WAV / FLAC，单文件 ≤ 50MB</p>
+        <p class="dz-sub">支持 MP3 / WAV / FLAC 等音频格式，不设固定大小上限</p>
       </div>
     </section>
 
@@ -273,9 +273,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useSystemStore } from '@/stores/system'
 import { useModelsStore } from '@/stores/models'
 import { useWorksStore } from '@/stores/works'
-import { api, isDesktop } from '@/api'
+import { api } from '@/api'
 import type { DataMigrationProgress, DataStorageStatus, JobStatus } from '@/api'
 import { setPendingAudio } from '@/utils/pendingAudio'
+import { importDroppedAudio } from '@/utils/audioImport'
 
 defineOptions({ name: 'Index' })
 
@@ -383,35 +384,20 @@ function onImport() {
   router.push('/models')
 }
 
-function readDropAudio(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(new Error('无法读取拖入的音频文件'))
-    reader.readAsDataURL(file)
-  })
-}
-
 async function onHomeDrop(event: DragEvent) {
   homeDropActive.value = false
   const file = event.dataTransfer?.files?.[0]
   if (!file) return
-  if (file.size > 50 * 1024 * 1024) {
-    ElMessage.warning('音频文件不能超过 50MB')
-    return
-  }
   if (!file.type.startsWith('audio/') && !/\.(mp3|wav|flac|m4a|ogg|aac|opus|wma)$/i.test(file.name)) {
     ElMessage.warning('请选择音频文件')
     return
   }
-  let path = String((file as File & { path?: string }).path || '').trim()
-  if (!path || !isDesktop()) {
-    try {
-      path = String(await api.importAudioData(file.name, await readDropAudio(file)) || '').trim()
-    } catch {
-      ElMessage.error('无法导入拖入的音频文件')
-      return
-    }
+  let path = ''
+  try {
+    path = String(await importDroppedAudio(file) || '').trim()
+  } catch {
+    ElMessage.error('无法导入拖入的音频文件')
+    return
   }
   if (!path) {
     ElMessage.error('无法识别拖入的音频文件')

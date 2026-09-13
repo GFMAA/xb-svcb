@@ -272,6 +272,7 @@ const mockModels: ModelDTO[] = [
 ]
 let defaultModelId = 'm1'
 let mockInferencePresets: InferencePreset[] = []
+const mockAudioImports = new Map<string, string>()
 
 // 音乐资源获取的模拟状态（仅浏览器开发环境）
 let mockMusicKey = ''
@@ -956,6 +957,23 @@ export const mock = {
   },
   importAudioData(name: string, _data = ''): string {
     return `C:/music/${fileName(name)}`
+  },
+  startAudioImport(name: string): string {
+    const token = rid('drop_')
+    mockAudioImports.set(token, name)
+    return token
+  },
+  appendAudioImport(token: string, _data = ''): boolean {
+    return mockAudioImports.has(token)
+  },
+  finishAudioImport(token: string): string | null {
+    const name = mockAudioImports.get(token)
+    if (!name) return null
+    mockAudioImports.delete(token)
+    return `C:/music/${fileName(name)}`
+  },
+  cancelAudioImport(token: string): boolean {
+    return mockAudioImports.delete(token)
   },
   pickLyricsFile(): Promise<LyricsFileResult> {
     return browserPickTextFile('.lrc,.txt')

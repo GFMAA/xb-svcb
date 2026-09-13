@@ -231,6 +231,7 @@ import { useModelsStore } from '@/stores/models'
 import { useSystemStore } from '@/stores/system'
 import { useWorksStore } from '@/stores/works'
 import { f0MethodsForFramework, normalizeF0Method } from '@/utils/f0'
+import { importDroppedAudio } from '@/utils/audioImport'
 import { storeToRefs } from 'pinia'
 
 defineOptions({ name: 'RealtimeCoverPage' })
@@ -395,35 +396,23 @@ async function pickSong() {
   duration.value = await api.getAudioDuration(path)
 }
 
-function readFileDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(new Error('无法读取拖入的音频文件'))
-    reader.readAsDataURL(file)
-  })
-}
-
 async function setSongFromFile(file: File | undefined) {
   if (!file) return
-  if (file.size > 50 * 1024 * 1024) {
-    ElMessage.warning('音频文件不能超过 50MB')
-    return
-  }
   if (!file.type.startsWith('audio/') && !/\.(mp3|wav|flac|m4a|ogg|aac|opus|wma)$/i.test(file.name)) {
     ElMessage.warning('请选择音频文件')
     return
   }
-  let path = String((file as File & { path?: string }).path || '').trim()
-  if (!path && isDesktop()) {
-    try {
-      path = String(await api.importAudioData(file.name, await readFileDataUrl(file)) || '').trim()
-    } catch {
-      ElMessage.error('无法导入拖入的音频文件')
-      return
-    }
+  let path = ''
+  try {
+    path = String(await importDroppedAudio(file) || '').trim()
+  } catch {
+    ElMessage.error('无法导入拖入的音频文件')
+    return
   }
-  if (!path) path = file.name
+  if (!path) {
+    ElMessage.error('无法识别拖入的音频文件')
+    return
+  }
   song.value = { name: file.name, path, hint: '已导入音频' }
   void loadSongDuration()
 }

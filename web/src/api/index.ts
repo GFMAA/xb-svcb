@@ -285,6 +285,18 @@ export const api = {
   importAudioData: (name: string, data: string) =>
     invoke<string | null>('import_audio_data', [name, data], () => mock.importAudioData(name, data)),
 
+  startAudioImport: (name: string) =>
+    invoke<string | null>('start_audio_import', [name], () => mock.startAudioImport(name)),
+
+  appendAudioImport: (token: string, data: string) =>
+    invoke<boolean>('append_audio_import', [token, data], () => mock.appendAudioImport(token, data)),
+
+  finishAudioImport: (token: string) =>
+    invoke<string | null>('finish_audio_import', [token], () => mock.finishAudioImport(token)),
+
+  cancelAudioImport: (token: string) =>
+    invoke<boolean>('cancel_audio_import', [token], () => mock.cancelAudioImport(token)),
+
   pickLyricsFile: () =>
     invoke<LyricsFileResult>('pick_lyrics_file', [], () => mock.pickLyricsFile()),
 
