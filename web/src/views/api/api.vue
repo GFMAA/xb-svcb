@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="api-page">
     <header class="page-head">
       <div>
@@ -66,25 +66,20 @@
           <small>防火墙或其他程序占用端口时，请更换端口。</small>
         </label>
 
-        <div class="field-group key-field">
-          <span>API Key</span>
-          <div class="input-actions">
-            <el-input v-model="status.api_key" readonly show-password />
-            <el-button title="复制 API Key" @click="copyText(status.api_key, 'API Key')">
-              <el-icon><CopyDocument /></el-icon>
-            </el-button>
-            <el-button
-              title="重新生成 API Key"
-              :disabled="status.running"
-              :loading="busy === 'key'"
-              @click="regenerateKey"
-            >
-              <el-icon><Refresh /></el-icon>
-            </el-button>
-          </div>
-          <small>调用受保护接口时通过 <code>X-API-Key</code> 请求头发送。</small>
+        <div class="field-group domain-field">
+          <span>绑定域名</span>
+          <el-input
+            v-model="draft.domain"
+            placeholder="例如 test.juzidc.cn"
+            :style="domainInputStyle"
+            :disabled="status.running || draft.scope === 'local'"
+          />
+          <small>{{ draft.scope === 'local' ? '仅局域网监听模式支持绑定域名。' : '使用前请将域名 DNS 解析到本机公网IP。' }}</small>
         </div>
+
       </div>
+
+
 
       <div class="address-block">
         <span class="address-label">访问地址</span>
@@ -124,58 +119,136 @@
       <p v-if="status.last_error && !status.running" class="last-error">{{ status.last_error }}</p>
     </section>
 
-    <section class="docs-band" data-guide="api-docs">
+    <section class="key-band" data-guide="api-keys">
       <div class="section-title">
         <div>
-          <h2>调用文档</h2>
-          <p>典型流程：上传音频、读取模型、创建任务、轮询状态、下载成品。</p>
+          <h2>API 密钥</h2>
+          <p>每个密钥可单独设置有效期和启用状态，修改前请先停止服务。</p>
         </div>
-        <el-segmented v-model="sampleLanguage" :options="sampleOptions" />
+        <el-button type="primary" plain :disabled="status.running" @click="openKeyDialog()">
+          <el-icon><Plus /></el-icon>
+          添加密钥
+        </el-button>
       </div>
-
-      <div class="docs-layout">
-        <div class="code-panel">
-          <div class="code-head">
-            <span>{{ sampleLanguage === 'python' ? 'Python · requests' : 'PowerShell · Invoke-RestMethod' }}</span>
-            <button title="复制示例" @click="copyText(activeSample, '调用示例')">
+      <div class="key-list">
+        <article v-for="item in status.api_keys" :key="item.id" class="key-card">
+          <div class="key-card-head">
+            <strong>{{ item.name }}</strong>
+            <el-tag :type="item.enabled && !item.expired ? 'success' : 'info'" size="small">
+              {{ item.expired ? '已过期' : item.enabled ? '已启用' : '已禁用' }}
+            </el-tag>
+          </div>
+          <div class="key-secret-row">
+            <code title="单击复制完整 API 密钥" @click="copyApiKey(item)">{{ visibleKeys[item.id] ? item.secret : maskKey(item.secret) }}</code>
+            <el-button text title="复制 API 密钥" @click="copyApiKey(item)">
               <el-icon><CopyDocument /></el-icon>
-            </button>
+            </el-button>
+            <el-button text :title="visibleKeys[item.id] ? '隐藏 API 密钥' : '显示 API 密钥'" @click="toggleKeyVisible(item.id)">
+              <el-icon><Hide v-if="visibleKeys[item.id]" /><View v-else /></el-icon>
+            </el-button>
           </div>
-          <pre><code>{{ activeSample }}</code></pre>
-        </div>
+          <div class="key-card-info">
+            <span>创建于 {{ formatKeyDate(item.created_at) }}</span>
+            <span>{{ item.expires_at ? `到期于 ${formatKeyDate(item.expires_at)}` : '永不过期' }}</span>
+          </div>
+          <div class="key-card-actions">
+            <el-switch
+              :model-value="item.enabled"
+              :disabled="status.running || item.expired"
+              active-text="启用"
+              inactive-text="禁用"
+              @change="toggleKey(item, Boolean($event))"
+            />
+            <el-button text :disabled="status.running" @click="openKeyDialog(item)">
+              <el-icon><Edit /></el-icon>编辑
+            </el-button>
+            <el-button text type="danger" :disabled="status.running || status.api_keys.length <= 1" @click="removeKey(item)">
+              <el-icon><Delete /></el-icon>删除
+            </el-button>
+          </div>
+        </article>
+        <el-empty v-if="!status.api_keys.length" description="暂无 API 密钥" :image-size="64" />
+      </div>
+    </section>
 
-        <div class="endpoint-panel">
-          <div class="endpoint-head">
-            <span>v1 接口</span>
-            <small>所有受保护接口均需 X-API-Key</small>
-          </div>
-          <div class="endpoint-list">
-            <div v-for="item in endpoints" :key="item.method + item.path" class="endpoint-row">
-              <span class="method" :class="item.method.toLowerCase()">{{ item.method }}</span>
-              <code>{{ item.path }}</code>
-              <span>{{ item.label }}</span>
-            </div>
+    <el-dialog v-model="keyDialogVisible" :title="editingKeyId ? '编辑 API Key' : '添加 API Key'" width="min(460px, calc(100vw - 32px))">
+      <el-form label-position="top">
+        <el-form-item label="名称">
+          <el-input v-model="keyForm.name" maxlength="40" show-word-limit placeholder="例如：生产环境" />
+        </el-form-item>
+        <el-form-item label="有效期">
+          <el-date-picker
+            v-model="keyForm.expires_at"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ss"
+            format="YYYY-MM-DD HH:mm"
+            placeholder="留空表示永不过期"
+            clearable
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-switch v-model="keyForm.enabled" active-text="启用" inactive-text="禁用" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="keyDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="busy === 'key-save'" @click="saveKey">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <section class="docs-band" data-guide="api-docs">
+    <div class="section-title">
+      <div>
+        <h2>调用文档</h2>
+        <p>典型流程：上传音频、读取模型、创建任务、轮询状态、下载成品。</p>
+      </div>
+      <el-segmented v-model="sampleLanguage" :options="sampleOptions" />
+    </div>
+
+    <div class="docs-layout">
+      <div class="code-panel">
+        <div class="code-head">
+          <span>{{ sampleLanguage === 'python' ? 'Python · requests' : 'PowerShell · Invoke-RestMethod' }}</span>
+          <button title="复制示例" @click="copyText(activeSample, '调用示例')">
+            <el-icon><CopyDocument /></el-icon>
+          </button>
+        </div>
+        <pre><code>{{ activeSample }}</code></pre>
+      </div>
+
+      <div class="endpoint-panel">
+        <div class="endpoint-head">
+          <span>v1 接口</span>
+          <small>所有受保护接口均需 X-API-Key</small>
+        </div>
+        <div class="endpoint-list">
+          <div v-for="item in endpoints" :key="item.method + item.path" class="endpoint-row">
+            <span class="method" :class="item.method.toLowerCase()">{{ item.method }}</span>
+            <code>{{ item.path }}</code>
+            <span>{{ item.label }}</span>
           </div>
         </div>
       </div>
+    </div>
 
-      <div class="notes-grid">
-        <div>
-          <el-icon><UploadFilled /></el-icon>
-          <span>上传限制</span>
-          <p>不设置文件大小上限，按流式写入磁盘；支持 WAV、FLAC、MP3、M4A、AAC、OGG、Opus 及常见视频容器。</p>
-        </div>
-        <div>
-          <el-icon><Lock /></el-icon>
-          <span>外部访问</span>
-          <p>局域网模式监听所有网卡。仅在可信网络使用，并在调用方妥善保存 API Key。</p>
-        </div>
-        <div>
-          <el-icon><Timer /></el-icon>
-          <span>异步任务</span>
-          <p>创建接口返回 202；轮询任务到 done 后，再通过 result_url 下载音频。</p>
-        </div>
+    <div class="notes-grid">
+      <div>
+        <el-icon><UploadFilled /></el-icon>
+        <span>上传限制</span>
+        <p>不设置文件大小上限，按流式写入磁盘；支持 WAV、FLAC、MP3、M4A、AAC、OGG、Opus 及常见视频容器。</p>
       </div>
+      <div>
+        <el-icon><Lock /></el-icon>
+        <span>外部访问</span>
+        <p>局域网模式监听所有网卡。仅在可信网络使用，并在调用方妥善保存 API Key。</p>
+      </div>
+      <div>
+        <el-icon><Timer /></el-icon>
+        <span>异步任务</span>
+        <p>创建接口返回 202；轮询任务到 done 后，再通过 result_url 下载音频。</p>
+      </div>
+    </div>
     </section>
   </div>
 </template>
@@ -186,19 +259,23 @@ import { ElMessage } from 'element-plus'
 import {
   CircleCheck,
   Connection,
+  Delete,
+  Edit,
+  Hide,
+  Plus,
   CopyDocument,
   DocumentChecked,
   Lock,
   Notebook,
   Reading,
-  Refresh,
   SwitchButton,
   Timer,
   UploadFilled,
   VideoPlay,
+  View,
   WarningFilled,
 } from '@element-plus/icons-vue'
-import { api, type HttpApiScope, type HttpApiStatus, type HttpApiTestResult } from '@/api'
+import { api, type HttpApiKey, type HttpApiKeyResult, type HttpApiScope, type HttpApiStatus, type HttpApiTestResult } from '@/api'
 
 defineOptions({ name: 'ApiAccess' })
 
@@ -206,16 +283,23 @@ const emptyStatus: HttpApiStatus = {
   running: false,
   scope: 'local',
   host: '127.0.0.1',
-  port: 8765,
+  port: 8760,
+  domain: '',
+  domain_url: '',
   api_key: '',
-  base_urls: ['http://127.0.0.1:8765'],
-  docs_url: 'http://127.0.0.1:8765/docs',
-  redoc_url: 'http://127.0.0.1:8765/redoc',
+  api_keys: [],
+  base_urls: ['http://127.0.0.1:8760'],
+  docs_url: 'http://127.0.0.1:8760/docs',
+  redoc_url: 'http://127.0.0.1:8760/redoc',
 }
 
 const status = reactive<HttpApiStatus>({ ...emptyStatus })
-const draft = reactive<{ scope: HttpApiScope; port: number }>({ scope: 'local', port: 8765 })
-const busy = ref<'start' | 'stop' | 'save' | 'test' | 'key' | ''>('')
+const visibleKeys = reactive<Record<string, boolean>>({})
+const keyDialogVisible = ref(false)
+const editingKeyId = ref<string | null>(null)
+const keyForm = reactive<{ name: string; expires_at: string | null; enabled: boolean }>({ name: '', expires_at: null, enabled: true })
+const draft = reactive<{ scope: HttpApiScope; port: number; domain: string }>({ scope: 'local', port: 8760, domain: '' })
+const busy = ref<'start' | 'stop' | 'save' | 'test' | 'key-save' | ''>('')
 const testResult = ref<HttpApiTestResult | null>(null)
 const sampleLanguage = ref<'python' | 'powershell'>('python')
 const sampleOptions = [
@@ -231,6 +315,12 @@ const scopeHint = computed(() =>
     ? '只有当前电脑上的程序可以调用。'
     : '同一局域网内的设备可以通过本机 IP 调用。',
 )
+
+const domainInputStyle = computed(() => {
+  const hintLength = 'for example test.juzidc.cn'.length
+  const length = Math.max(draft.domain.length, hintLength)
+  return { width: `${Math.min(420, Math.max(190, length * 8 + 28))}px`, maxWidth: '100%' }
+})
 
 const pythonSample = computed(() => `import time
 from pathlib import Path
@@ -323,11 +413,76 @@ const endpoints = [
   { method: 'POST', path: '/api/v1/jobs/{job_id}/retry', label: '重试失败任务' },
 ]
 
+function maskKey(value: string) {
+  if (!value) return ''
+  return value.length <= 16 ? '************' : `${value.slice(0, 9)}********${value.slice(-5)}`
+}
+
+function formatKeyDate(value?: string | null) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+async function copyApiKey(item: HttpApiKey) {
+  await copyText(item.secret, item.name || 'API Key')
+}
+
+function toggleKeyVisible(keyId: string) {
+  visibleKeys[keyId] = !visibleKeys[keyId]
+}
+
+function openKeyDialog(item?: HttpApiKey) {
+  editingKeyId.value = item?.id || null
+  keyForm.name = item?.name || ''
+  keyForm.expires_at = item?.expires_at ? item.expires_at.replace(/Z$/, '').slice(0, 19) : null
+  keyForm.enabled = item?.enabled ?? true
+  keyDialogVisible.value = true
+}
+
+function applyKeyResult(result: HttpApiKeyResult) {
+  if (result.items) status.api_keys = result.items
+  if (result.key) status.api_key = result.key.secret
+}
+
+async function saveKey() {
+  busy.value = 'key-save'
+  try {
+    const payload = { ...keyForm }
+    const result = editingKeyId.value
+      ? await api.updateHttpApiKey(editingKeyId.value, payload)
+      : await api.createHttpApiKey(payload)
+    applyKeyResult(result)
+    if (!result.ok) {
+      ElMessage.error(result.error || 'API Key operation failed')
+      return
+    }
+    keyDialogVisible.value = false
+    ElMessage.success(editingKeyId.value ? 'API Key updated' : 'API Key created')
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function toggleKey(item: HttpApiKey, enabled: boolean) {
+  const result = await api.updateHttpApiKey(item.id, { enabled })
+  applyKeyResult(result)
+  if (!result.ok) ElMessage.error(result.error || 'API Key operation failed')
+}
+
+async function removeKey(item: HttpApiKey) {
+  if (!window.confirm(`Delete API Key "${item.name}"?`)) return
+  const result = await api.deleteHttpApiKey(item.id)
+  applyKeyResult(result)
+  result.ok ? ElMessage.success('API Key deleted') : ElMessage.error(result.error || 'API Key operation failed')
+}
+
 function applyStatus(next: HttpApiStatus, syncDraft = true) {
   Object.assign(status, next)
   if (syncDraft) {
     draft.scope = next.scope
     draft.port = next.port
+    draft.domain = next.domain || ''
   }
 }
 
@@ -378,16 +533,6 @@ async function stopServer() {
   }
 }
 
-async function regenerateKey() {
-  busy.value = 'key'
-  try {
-    const result = await api.regenerateHttpApiKey()
-    applyStatus(result)
-    result.ok ? ElMessage.success('已生成新的 API Key') : ElMessage.error(result.error || '更新失败')
-  } finally {
-    busy.value = ''
-  }
-}
 
 async function testServer() {
   busy.value = 'test'
@@ -444,7 +589,6 @@ onUnmounted(() => {
 .page-head,
 .section-title,
 .head-actions,
-.input-actions,
 .address-block,
 .runtime-actions,
 .test-result,
@@ -487,6 +631,7 @@ h2 { margin: 0; font-size: 17px; letter-spacing: 0; }
 .service-state.running i { background: var(--xb-success); box-shadow: 0 0 10px rgba(25, 245, 154, 0.55); }
 
 .control-band,
+.key-band,
 .docs-band {
   border: 1px solid var(--xb-border);
   background: var(--xb-panel);
@@ -494,12 +639,13 @@ h2 { margin: 0; font-size: 17px; letter-spacing: 0; }
   padding: 24px;
   backdrop-filter: blur(18px);
 }
+.key-band { margin-top: 18px; }
 .docs-band { margin-top: 18px; }
 .section-title { justify-content: space-between; gap: 20px; margin-bottom: 22px; }
 
 .settings-grid {
   display: grid;
-  grid-template-columns: minmax(240px, 0.8fr) minmax(180px, 0.55fr) minmax(340px, 1.5fr);
+  grid-template-columns: minmax(220px, 0.8fr) minmax(150px, 0.45fr) minmax(220px, 1fr);
   gap: 22px;
 }
 .field-group { display: flex; flex-direction: column; align-items: stretch; gap: 9px; min-width: 0; }
@@ -507,9 +653,18 @@ h2 { margin: 0; font-size: 17px; letter-spacing: 0; }
 .field-group small { min-height: 30px; color: var(--xb-muted); font-size: 11.5px; line-height: 1.45; }
 .field-group code { color: var(--xb-primary); }
 .port-field :deep(.el-input-number) { width: 100%; }
-.input-actions { gap: 8px; min-width: 0; }
-.input-actions :deep(.el-input) { flex: 1; width: 0; min-width: 0; }
-.input-actions .el-button { width: 36px; padding: 0; flex-shrink: 0; }
+.domain-field :deep(.el-input) { min-width: 190px; max-width: 100%; }
+.key-card-head, .key-secret-row, .key-card-actions { display: flex; align-items: center; }
+.key-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.key-card { min-width: 0; padding: 14px; border: 1px solid var(--xb-border); border-radius: 7px; background: rgba(var(--xb-fill-rgb), 0.035); }
+.key-card-head { justify-content: space-between; gap: 10px; }
+.key-card-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-secret-row { gap: 3px; margin-top: 12px; padding: 7px 8px; border: 1px solid var(--xb-border); border-radius: 5px; background: rgba(4, 6, 12, 0.45); }
+.key-secret-row code { flex: 1; min-width: 0; overflow: hidden; color: var(--xb-primary); cursor: pointer; text-overflow: ellipsis; white-space: nowrap; }
+.key-secret-row .el-button { width: 30px; padding: 0; }
+.key-card-info { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; color: var(--xb-muted); font-size: 11px; }
+.key-card-actions { justify-content: flex-end; flex-wrap: wrap; gap: 2px; margin-top: 10px; }
+.key-card-actions .el-switch { margin-right: auto; }
 
 .address-block {
   gap: 14px;
@@ -576,7 +731,6 @@ pre code { font-family: Consolas, 'Courier New', monospace; }
 
 @media (max-width: 1100px) {
   .settings-grid { grid-template-columns: 1fr 1fr; }
-  .key-field { grid-column: 1 / -1; }
   .address-block { align-items: flex-start; flex-wrap: wrap; }
   .runtime-actions { width: 100%; padding-left: 70px; }
   .docs-layout { grid-template-columns: 1fr; }
@@ -590,12 +744,13 @@ pre code { font-family: Consolas, 'Courier New', monospace; }
   .head-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; width: 100%; max-width: 100%; }
   .head-actions > .el-button { margin-left: 0; }
   .service-state { min-width: 0; white-space: nowrap; }
-  .control-band, .docs-band { padding: 18px 14px; }
+  .control-band, .key-band, .docs-band { padding: 18px 14px; }
   .section-title { align-items: flex-start; flex-direction: column; }
   .settings-grid { grid-template-columns: 1fr; }
-  .key-field { grid-column: auto; }
-  .input-actions { display: grid; grid-template-columns: minmax(0, 1fr) 36px 36px; width: 100%; }
-  .input-actions :deep(.el-input) { width: 100%; }
+  .domain-field :deep(.el-input) { width: 100% !important; min-width: 0; }
+  .key-list { grid-template-columns: 1fr; }
+  .key-card-actions { justify-content: flex-start; }
+  .key-card-actions .el-switch { width: 100%; margin-right: 0; margin-bottom: 2px; }
   .address-block { flex-direction: column; }
   .runtime-actions { width: 100%; padding-left: 0; flex-wrap: wrap; }
   .runtime-actions .el-button { margin-left: 0; }

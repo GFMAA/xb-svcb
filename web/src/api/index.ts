@@ -17,6 +17,7 @@ import type {
   HttpApiScope,
   HttpApiStatus,
   HttpApiTestResult,
+  HttpApiKeyResult,
   WorkDTO,
   MusicSearchResult,
   MusicSongResult,
@@ -112,7 +113,7 @@ export const api = {
   getHttpApiStatus: () =>
     invoke<HttpApiStatus>('get_http_api_status', [], () => mock.getHttpApiStatus()),
 
-  configureHttpApi: (payload: { scope: HttpApiScope; port: number }) =>
+  configureHttpApi: (payload: { scope: HttpApiScope; port: number; domain: string }) =>
     invoke<HttpApiStatus>('configure_http_api', [payload], () =>
       mock.configureHttpApi(payload),
     ),
@@ -122,7 +123,19 @@ export const api = {
       mock.regenerateHttpApiKey(),
     ),
 
-  startHttpApi: (payload: { scope: HttpApiScope; port: number }) =>
+  listHttpApiKeys: () =>
+    invoke<HttpApiKeyResult>('list_http_api_keys', [], () => mock.listHttpApiKeys()),
+
+  createHttpApiKey: (payload: { name?: string; expires_at?: string | null; enabled?: boolean }) =>
+    invoke<HttpApiKeyResult>('create_http_api_key', [payload], () => mock.createHttpApiKey(payload)),
+
+  updateHttpApiKey: (keyId: string, payload: { name?: string; expires_at?: string | null; enabled?: boolean }) =>
+    invoke<HttpApiKeyResult>('update_http_api_key', [keyId, payload], () => mock.updateHttpApiKey(keyId, payload)),
+
+  deleteHttpApiKey: (keyId: string) =>
+    invoke<HttpApiKeyResult>('delete_http_api_key', [keyId], () => mock.deleteHttpApiKey(keyId)),
+
+  startHttpApi: (payload: { scope: HttpApiScope; port: number; domain: string }) =>
     invoke<HttpApiStatus>('start_http_api', [payload], () => mock.startHttpApi(payload)),
 
   stopHttpApi: () =>
