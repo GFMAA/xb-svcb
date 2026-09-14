@@ -2,11 +2,11 @@
 
 适用范围：Windows x86_64、CPython 3.10、Torch 2.7.1+cu128，UVR / SeedVC / DDSP 共享环境。
 已验证 uv 0.12.5。必须支持 `uv pip compile/install --torch-backend cu128`。
-真实模型音频验收暂缓，仍是实验配方。本机完整 147 包空环境安装、重复安装与模拟修复已通过；不等同于发布验收或安装 EXE 全流程验收。
+真实模型音频验收暂缓，仍是实验配方。本机完整 148 包空环境安装、重复安装与模拟修复已通过；不等同于发布验收或安装 EXE 全流程验收。
 
 ## 保存了什么
 
-- `requirements.lock`：全部精确版本，不包含机器绝对路径。现有 146 个包均与此一致。
+- `requirements.lock`：全部精确版本，不包含机器绝对路径。现有 147 个包均与此一致。
 - `profile.json`：锁文件 SHA-256、14 个本地 wheel 的路径/大小/SHA-256，以及验收和回滚限制。
 - `assets/runtime/core-cu128/compat/`：本地 AudioTools 兼容 wheel 和六个已构建的辅助 wheel。
 - `assets/runtime/core-cu128/candidate/`：这次迁移使用的 NumPy、protobuf、TensorBoardX 三个新版 wheel。
@@ -17,7 +17,8 @@
 但本轮没有编译或发布新安装包。仅克隆源码不会获得这些二进制材料。
 缺失时 `--core-profile` 会明确拒绝执行；不得通过删除哈希检查绕过。
 
-锁文件共有 147 项：比现有环境多出的 `hf-xet==1.6.0` 是下载传输辅助包。
+锁文件共有 148 项：比现有环境多出的 `hf-xet==1.6.0` 是下载传输辅助包；
+`gin-config==0.5.0` 是 DDSP-SVC 的运行时依赖。
 本机 `platform.machine()` 返回 `AMD64`，上游依赖标记使用小写，目标平台解析则包含该依赖。
 因此固定其版本供新安装使用，但现有 HTTP 下载路径可缺少它；校验结果会单列 `missing_optional`。
 这不是第二套模型运行配方，也不会为通过校验自动安装它。

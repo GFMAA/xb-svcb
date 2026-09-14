@@ -75,7 +75,7 @@
           >
             <el-icon class="dz-icon"><UploadFilled /></el-icon>
             <p class="dz-main">点击选择或拖拽音频文件</p>
-            <p class="dz-sub">支持 MP3 / WAV / FLAC，单文件 ≤ 50MB</p>
+            <p class="dz-sub">支持 MP3 / WAV / FLAC 等音频格式，不设固定大小上限</p>
             <input ref="songInput" type="file" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg,.aac" hidden @change="onSongFileChange" />
           </div>
           <div v-else class="song-file">
@@ -1143,6 +1143,7 @@ import { useSystemStore } from '@/stores/system'
 import { useWorksStore } from '@/stores/works'
 import { f0MethodsForFramework, normalizeF0Method } from '@/utils/f0'
 import { takePendingAudio } from '@/utils/pendingAudio'
+import { importDroppedAudio } from '@/utils/audioImport'
 
 defineOptions({ name: 'CreatePage' })
 
@@ -2620,35 +2621,24 @@ async function onPickSong() {
   void api.getAudioDuration(path).then((value) => { audioDuration.value = value })
 }
 
-function readFileDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(new Error('无法读取拖入的音频文件'))
-    reader.readAsDataURL(file)
-  })
-}
-
 async function setSongFromFile(file: File | undefined) {
   if (!file) return
-  if (file.size > 50 * 1024 * 1024) {
-    ElMessage.warning('音频文件不能超过 50MB')
-    return
-  }
   const ext = file.name.split('.').pop()?.toLowerCase() || ''
   const allowed = ['mp3', 'wav', 'flac', 'm4a', 'ogg', 'aac', 'opus', 'wma']
   if (!allowed.includes(ext) && !file.type.startsWith('audio/')) {
     ElMessage.warning('请选择 MP3、WAV、FLAC 等音频文件')
     return
   }
-  let desktopPath = String((file as File & { path?: string }).path || '').trim()
-  if (!desktopPath && isDesktop()) {
-    try {
-      desktopPath = String(await api.importAudioData(file.name, await readFileDataUrl(file)) || '').trim()
-    } catch {
-      ElMessage.error('无法导入拖入的音频文件')
-      return
-    }
+  let desktopPath = ''
+  try {
+    desktopPath = String(await importDroppedAudio(file) || '').trim()
+  } catch {
+    ElMessage.error('无法导入拖入的音频文件')
+    return
+  }
+  if (!desktopPath) {
+    ElMessage.error('无法识别拖入的音频文件')
+    return
   }
   song.value = {
     name: file.name,

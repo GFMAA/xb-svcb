@@ -85,6 +85,8 @@ class Api:
         self._window = None
         self._migration_lock = threading.Lock()
         self._migration = self._empty_migration_status()
+        self._audio_import_lock = threading.RLock()
+        self._audio_imports: dict[str, Path] = {}
         # FastAPI 默认关闭。这里只创建控制器，不监听端口；必须由用户在界面手动启动。
         from .http_server import HttpApiServer
 
@@ -106,6 +108,18 @@ class Api:
 
     def regenerate_http_api_key(self) -> dict[str, Any]:
         return self._http_api.regenerate_key()
+
+    def list_http_api_keys(self) -> dict[str, Any]:
+        return self._http_api.list_keys()
+
+    def create_http_api_key(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._http_api.create_key(payload or {})
+
+    def update_http_api_key(self, key_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._http_api.update_key(key_id, payload or {})
+
+    def delete_http_api_key(self, key_id: str) -> dict[str, Any]:
+        return self._http_api.delete_key(key_id)
 
     def start_http_api(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._http_api.start(payload or {})
@@ -823,17 +837,9 @@ class Api:
 
     def import_audio_data(self, name: str, data: str) -> str | None:
         """Persist a browser/drag-and-drop audio payload for a pending work."""
-        raw = str(data or "")
-        if raw.startswith("data:") and "," in raw:
-            raw = raw.split(",", 1)[1]
-        try:
-            content = base64.b64decode(raw, validate=True)
-        except Exception:
-            return None
-        if not content or len(content) > 50 * 1024 * 1024:
-            return None
-        suffix = Path(str(name or "audio.wav")).suffix.lower()
-        if suffix not in {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus", ".wma"}:
+        content = self._decode_audio_data(data)
+        suffix = self._audio_suffix(name)
+        if not content or not suffix:
             return None
         target_dir = config.TEMP_DIR / "dropped-audio"
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -843,6 +849,82 @@ class Api:
         except OSError:
             return None
         return str(target)
+
+    @staticmethod
+    def _audio_suffix(name: str) -> str:
+        suffix = Path(str(name or "audio.wav")).suffix.lower()
+        return suffix if suffix in {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus", ".wma"} else ""
+
+    @staticmethod
+    def _decode_audio_data(data: str) -> bytes | None:
+        raw = str(data or "")
+        if raw.startswith("data:") and "," in raw:
+            raw = raw.split(",", 1)[1]
+        try:
+            return base64.b64decode(raw, validate=True)
+        except Exception:
+            return None
+
+    def start_audio_import(self, name: str) -> str | None:
+        """Start a streamed browser audio import and return its opaque token."""
+        suffix = self._audio_suffix(name)
+        if not suffix:
+            return None
+        target_dir = config.TEMP_DIR / "dropped-audio"
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            token = paths.new_id("drop_")
+            partial = target_dir / f"{token}{suffix}.part"
+            partial.touch(exist_ok=False)
+        except OSError:
+            return None
+        with self._audio_import_lock:
+            self._audio_imports[token] = partial
+        return token
+
+    def append_audio_import(self, token: str, data: str) -> bool:
+        """Append one Base64 chunk to a streamed browser audio import."""
+        with self._audio_import_lock:
+            partial = self._audio_imports.get(str(token or ""))
+        content = self._decode_audio_data(data)
+        if partial is None or not content:
+            return False
+        try:
+            with partial.open("ab") as stream:
+                stream.write(content)
+        except OSError:
+            self.cancel_audio_import(token)
+            return False
+        return True
+
+    def finish_audio_import(self, token: str) -> str | None:
+        """Complete a streamed import and return the final local file path."""
+        with self._audio_import_lock:
+            partial = self._audio_imports.pop(str(token or ""), None)
+        if partial is None:
+            return None
+        try:
+            if not partial.is_file() or partial.stat().st_size <= 0:
+                partial.unlink(missing_ok=True)
+                return None
+            target = Path(str(partial)[:-len(".part")])
+            partial.replace(target)
+            return str(target)
+        except OSError:
+            partial.unlink(missing_ok=True)
+            return None
+
+    def cancel_audio_import(self, token: str) -> bool:
+        """Cancel a streamed import and remove its partial file."""
+        with self._audio_import_lock:
+            partial = self._audio_imports.pop(str(token or ""), None)
+        if partial is None:
+            return False
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            return False
+        return True
 
     def pick_lyrics_file(self) -> dict[str, Any]:
         result = self._open_dialog(

@@ -1,8 +1,6 @@
-"""Reference-guided timing alignment and natural pitch correction using Praat PSOLA.
+"""使用 Praat PSOLA 进行参考引导的时序对齐和自然音高修正。
 
-The converted vocal is aligned toward the original performance before its pitch is
-corrected toward the guide and a slowly estimated note centre. Conservative duration
-tiers preserve pitch/formants while fast deviations such as vibrato and slides remain.
+转换后的主唱会先向原始演唱对齐，再向参考轨和缓慢估计的音符中心修正音高。保守的时长分层可以保留音高和共振峰，而快速变化，例如颤音和滑音，则继续保留。
 """
 
 from __future__ import annotations
@@ -22,13 +20,9 @@ _MIN_APPLIED_RESYNTHESIS_PITCH_CENTS = 5.0
 _RESYNTHESIS_PITCH_SMOOTH_SECONDS = 0.040
 _MIN_RESYNTHESIS_PITCH_POINTS = 12
 _MIN_RESYNTHESIS_PITCH_SECONDS = 0.150
-# A missing F0 frame inside a correction lobe usually marks an onset, release, or
-# consonant.  Letting PSOLA span it produces a short phase jump at the exact place
-# listeners describe as a click/stutter.
+# 校正叶片中的缺失 F0 帧通常意味着起音、释放或辅音。让 PSOLA 跨过它会在听众形容成咔嗒/卡顿的那个位置制造短暂相位跳变。
 _RESYNTHESIS_MAX_INTERNAL_GAP_SECONDS = 0.025
-# PSOLA is reliable on a held note, but a portamento or an octave-tracker jump needs
-# its own time-varying treatment.  Exclude those contours from the local resynthesis
-# mask while leaving the pitch curve itself available for diagnostics/future methods.
+# PSOLA 对持续音很可靠，但滑音或八度跟踪跳变需要单独的时变处理。把这些轮廓从局部重合成遮罩中排除，同时保留音高曲线本身供诊断和未来方法使用。
 _RESYNTHESIS_MAX_SOURCE_PITCH_SPAN_SEMITONES = 1.75
 _RESYNTHESIS_MAX_SOURCE_PITCH_SLOPE_SEMITONES_PER_SECOND = 6.0
 _RESYNTHESIS_CROSSFADE_SECONDS = 0.005
@@ -63,7 +57,7 @@ def _natural_pitch_curve(
     reference_frequencies: "np.ndarray",
     strength: float,
 ) -> tuple["np.ndarray", dict[str, float]]:
-    """Return a conservative corrected F0 curve for Praat PitchTier points."""
+    """返回适用于 Praat PitchTier 点的保守修正 F0 曲线。"""
     import numpy as np
     from scipy.ndimage import gaussian_filter1d, median_filter
 
@@ -93,7 +87,7 @@ def _natural_pitch_curve(
     if not valid_indices.size:
         return corrected, {"points": 0.0, "median_cents": 0.0, "max_cents": 0.0}
 
-    # Process each voiced phrase separately so medians never bridge an unvoiced gap.
+    # 分别处理每个有声音节段，避免中位数跨越无声间隙。
     split_at = np.flatnonzero(
         (np.diff(valid_indices) > 1)
         | (np.diff(src_times[valid_indices]) > 0.055)
@@ -120,9 +114,7 @@ def _natural_pitch_curve(
             target_notes[offset] = current_note
 
         raw_drift = ref_midi[indices] - src_midi[indices]
-        # Large disagreements are usually octave/F0 tracking errors. Let the reference
-        # performance guide the converted voice, but do not force it onto every detected
-        # semitone; that hard note-centre pull is the main source of an Auto-Tune edge.
+        # 大幅分歧通常是八度或 F0 跟踪错误。让参考演唱引导转换后的声音，但不要把它硬拉到每一个检测到的半音上；这种强行贴音符中心的做法正是 Auto-Tune 质感的主要来源。
         trustworthy = np.abs(raw_drift) <= 0.65
         drift = np.where(trustworthy, np.clip(raw_drift, -0.55, 0.55), 0.0)
         intonation = np.clip(target_notes - centre, -0.35, 0.35)
@@ -141,8 +133,7 @@ def _natural_pitch_curve(
                 sigma=max(1.0, 0.025 / max(spacing, 0.002)),
                 mode="nearest",
             )
-            # Fade correction at voiced phrase edges so PSOLA never enters or leaves a
-            # correction abruptly on an onset, consonant, breath, or note release.
+            # 在有声音节段边缘淡出校正，避免 PSOLA 在起音、辅音、呼吸或音符释放处突然进入或退出校正。
             fade_points = min(
                 len(indices) // 2,
                 max(2, int(round(0.06 / max(spacing, 0.002)))),
@@ -168,7 +159,7 @@ def _estimate_envelope_lag(
     reference: "np.ndarray",
     sample_rate: int,
 ) -> tuple[float, float]:
-    """Estimate reference-to-source lag from 20 ms RMS envelopes."""
+    """基于 20 毫秒 RMS 包络估计参考音轨相对于源音轨的时延。"""
     import numpy as np
     from scipy.ndimage import uniform_filter1d
 
@@ -214,12 +205,9 @@ def _suppress_reference_gap_residual(
     sample_rate: int,
     lag_seconds: float = 0.0,
 ) -> tuple["np.ndarray", dict[str, float]]:
-    """Attenuate short model-only bursts inside reference vocal gaps.
+    """衰减参考人声空隙中的短暂模型独有爆发。
 
-    A converted render can keep a voiced/noisy island where the guide has a real
-    consonant gap.  This is separate from pitch correction: the guide controls only
-    the short-term level, and the bounded, smoothed attenuation keeps breaths and
-    phrase boundaries intact.
+    转换后的渲染可能会在参考轨真实的辅音空隙里保留一小段有声/噪声孤岛。这与音高修正是分开的：参考轨只控制短时电平，而有界且平滑的衰减能保留呼吸和乐句边界。
     """
     import numpy as np
     from scipy.ndimage import gaussian_filter1d, uniform_filter1d
@@ -314,7 +302,7 @@ def _suppress_reference_gap_residual(
         & (excess_db >= _REFERENCE_GAP_MIN_EXCESS_DB)
     )
 
-    # Bridge one or two unstable analysis frames, but never bridge a long pause.
+    # 可以跨过一两帧不稳定的分析帧，但绝不跨越长停顿。
     for _ in range(2):
         bridge = (
             ~candidate
@@ -397,7 +385,7 @@ def _alignment_feature(
     audio: "np.ndarray",
     sample_rate: int,
 ) -> tuple["np.ndarray", "np.ndarray", float]:
-    """Return a compact energy/onset feature sampled at roughly 100 Hz."""
+    """返回一个按约 100 Hz 采样的紧凑能量/起音特征。"""
     import numpy as np
     from scipy.ndimage import uniform_filter1d
     from scipy.signal import resample_poly
@@ -439,7 +427,7 @@ def _phonetic_feature(
     audio: "np.ndarray",
     sample_rate: int,
 ) -> tuple["np.ndarray", "np.ndarray", float]:
-    """Return speaker-normalized cepstral features for acoustic phoneme matching."""
+    """返回用于声学音素匹配的说话人归一化倒谱特征。"""
     import numpy as np
     from scipy.fft import dct, rfft
     from scipy.signal import resample_poly
@@ -506,7 +494,7 @@ def _phrase_spans(
     active: "np.ndarray",
     hop_seconds: float,
 ) -> list[tuple[int, int]]:
-    """Split active vocal frames at sentence-like pauses while retaining word gaps."""
+    """在保留词间停顿的同时，按类似句子的停顿拆分活动人声帧。"""
     import numpy as np
 
     indices = np.flatnonzero(np.asarray(active, dtype=bool))
@@ -532,7 +520,7 @@ def _match_phrase_spans(
     reference_spans: list[tuple[int, int]],
     hop_seconds: float,
 ) -> list[tuple[tuple[int, int], tuple[int, int]]]:
-    """Monotonically pair sentence spans using position and duration consistency."""
+    """使用位置和时长一致性单调配对乐句片段。"""
     import math as _math
 
     pairs: list[tuple[tuple[int, int], tuple[int, int]]] = []
@@ -566,7 +554,7 @@ def _banded_phonetic_dtw(
     reference_features: "np.ndarray",
     band_frames: int,
 ) -> tuple["np.ndarray", "np.ndarray", "np.ndarray"]:
-    """Return a monotonic, slope-constrained DTW path and per-anchor similarity."""
+    """返回带单调和斜率约束的 DTW 路径，以及每个锚点的相似度。"""
     import numpy as np
 
     source_count = len(source_features)
@@ -635,7 +623,7 @@ def _phonetic_alignment_anchors(
     reference: "np.ndarray",
     sample_rate: int,
 ) -> tuple[list[float], list[float], list[float], int]:
-    """Build high-confidence source/reference anchors from phrase and phoneme matches."""
+    """从乐句和音素匹配中构建高置信度的源/参考锚点。"""
     import numpy as np
 
     source_features, source_active, hop_seconds = _phonetic_feature(source, sample_rate)
@@ -727,10 +715,9 @@ def _local_alignment_map(
     "np.ndarray",
     dict[str, float],
 ]:
-    """Estimate a bounded source-to-reference timing map from local vocal events.
+    """基于局部人声事件估计一个受限的源到参考时序映射。
 
-    The returned factors are suitable for a Praat DurationTier. Endpoints are fixed so
-    that the aligned vocal keeps the source duration and remains mix-aligned.
+    返回的因子适合 Praat DurationTier。端点固定，以便对齐后的主唱保留源时长并保持与混音对齐。
     """
     import numpy as np
 
@@ -821,17 +808,14 @@ def _local_alignment_map(
 
     anchor_times = np.asarray(source_anchors, dtype=np.float64)
     raw_lags = anchor_times - np.asarray(target_anchors, dtype=np.float64)
-    # Smooth only among nearby anchors so a pause never carries the previous vowel's
-    # timing offset into the next phrase.
+    # 只在相邻锚点之间平滑，避免停顿把前一个元音的时序偏移带到下一句。
     lag_values = raw_lags.copy()
     for anchor_index, anchor_time in enumerate(anchor_times):
         neighborhood = np.abs(anchor_times - anchor_time) <= 0.90
         if int(neighborhood.sum()) >= 3:
             lag_values[anchor_index] = float(np.median(raw_lags[neighborhood]))
 
-    # Keep a dense, smooth phoneme map for the later F0 lookup even when the audio itself
-    # is not time-stretched. This preserves the previous version's useful local pitch
-    # correspondence without imposing a continuously moving DurationTier on vowels.
+    # 即使音频本身没有被拉伸，也保留一张稠密、平滑的音素映射供后续 F0 查找。这样能保留上一版有用的局部音高对应关系，而不会把持续移动的 DurationTier 强加给元音。
     guide_source_points = anchor_times.copy()
     guide_target_points = guide_source_points - amount * lag_values
     guide_order = np.argsort(guide_source_points)
@@ -856,9 +840,7 @@ def _local_alignment_map(
     guide_target_points[-1] = duration
     empty_stats["guide_points"] = float(max(0, len(guide_source_points) - 2))
 
-    # Micro-warping is more audible than a tiny timing error on a sustained vowel. Keep
-    # all matches for diagnostics, but create a DurationTier only for a continuous run
-    # of meaningful offsets: >25 ms raw and >=8 ms after the user's strength is applied.
+    # 在持续元音上，微小拉伸比一点点时序误差更容易被听出来。保留所有匹配用于诊断，但只为连续的、具有意义的偏移创建 DurationTier：原始偏移大于 25 毫秒，且在应用用户强度后至少达到 8 毫秒。
     lag_dead_zone = 0.025
     lag_values = np.sign(lag_values) * np.maximum(
         np.abs(lag_values) - lag_dead_zone,
@@ -899,14 +881,11 @@ def _local_alignment_map(
     target_points = target_points[keep]
     source_delta = np.diff(source_points)
     desired_factors = np.diff(target_points) / np.maximum(source_delta, 1e-6)
-    # Sustained vowels expose local time warps as flutter/"fan" artifacts.  Keep the
-    # guide map for pitch correspondence, but cap the actual DurationTier at 2% so
-    # SVC/RVC/SeedVC renders remain phase-stable and mix-aligned.
+    # 持续元音会把局部时序扭曲暴露成颤动/扇形伪影。保留参考映射用于音高对应，但把实际 DurationTier 限制在 2%，这样 SVC/RVC/SeedVC 渲染就能保持相位稳定并与混音对齐。
     max_stretch = 0.020
     factors = np.clip(desired_factors, 1.0 - max_stretch, 1.0 + max_stretch)
 
-    # Preserve the full duration after clipping. Distribute the residual only across
-    # intervals that still have headroom so the advertised stretch bound remains strict.
+    # 在裁剪后保留完整时长。只在仍有余量的区间里分配残差，这样声明的拉伸上限仍然严格成立。
     weighted_mean = float(np.sum(factors * source_delta) / max(duration, 1e-6))
     if weighted_mean > 1e-6:
         factors = factors / weighted_mean
@@ -954,7 +933,7 @@ def _replace_duration_tier(
     factors: "np.ndarray",
     praat_call,
 ) -> None:
-    """Attach the bounded local timing curve to a Praat Manipulation object."""
+    """将受限的局部时序曲线附加到 Praat Manipulation 对象上。"""
     tier = praat_call(
         "Create DurationTier",
         "xb-ai-alignment",
@@ -987,7 +966,7 @@ def _stable_pitch_resynthesis_regions(
     corrected_frequencies: "np.ndarray",
     strength: float,
 ) -> list[tuple[float, float]]:
-    """Select complete, coherent correction lobes instead of short PSOLA islands."""
+    """选择完整、连贯的校正叶片，而不是短小的 PSOLA 孤岛。"""
     import numpy as np
     from scipy.ndimage import gaussian_filter1d, median_filter
 
@@ -1071,9 +1050,7 @@ def _stable_pitch_resynthesis_regions(
                 continue
 
             lobe_times = phrase_times[lobe]
-            # Do not let an overlap-add window cross a real F0 hole.  The broader
-            # phrase split above intentionally tolerates short word gaps for pitch
-            # matching, but that tolerance is unsafe for local PSOLA.
+            # 不要让重叠相加窗口跨过真实的 F0 空洞。上面的更宽松乐句拆分会为音高匹配有意容忍短词间隙，但这种容忍对局部 PSOLA 并不安全。
             if (
                 len(lobe_times) > 1
                 and float(np.max(np.diff(lobe_times)))
@@ -1081,11 +1058,7 @@ def _stable_pitch_resynthesis_regions(
             ):
                 continue
 
-            # A correction lobe can be long and coherent in the *requested* delta
-            # while the source itself is sliding between notes.  Resynthesizing that
-            # contour with one local mask is where the remaining flutter/card-like
-            # artifacts originate.  Use a short median filter to ignore one-frame
-            # tracker spikes, then reject only broad movement or a sustained slope.
+            # 在“请求的”差值上，一个校正叶片可能很长且连贯，但源音轨本身可能正在音符之间滑动。用单一局部遮罩去重合成这条轮廓，正是剩余的颤动/卡片状伪影来源。用短中值滤波忽略单帧跟踪尖峰，然后只拒绝大范围移动或持续斜坡。
             source_midi = _hz_to_midi(source_hz[phrase[lobe]])
             if len(source_midi) >= 3:
                 filter_size = min(5, len(source_midi))
@@ -1151,9 +1124,7 @@ def _stable_pitch_resynthesis_regions(
             ):
                 continue
 
-            # Grow from the trustworthy lobe to the near-zero crossings. PSOLA then
-            # enters and leaves on a complete correction lobe rather than crossfading
-            # repeatedly in the middle of a sustained vowel.
+            # 从可靠叶片向接近零交叉的位置扩展。这样 PSOLA 会在完整的校正叶片上进入和退出，而不是在持续元音中间反复交叉淡化。
             left = int(lobe[0])
             while (
                 left > 0
@@ -1201,12 +1172,9 @@ def _resynthesis_region_curve(
     duration_source_points: "np.ndarray | None" = None,
     duration_factors: "np.ndarray | None" = None,
 ) -> "np.ndarray":
-    """Blend PSOLA only where a perceptible pitch or timing change was requested.
+    """只在请求了可感知的音高或时序变化的位置混合 PSOLA。
 
-    Praat resynthesis can alter phase even when a pitch point is unchanged. A
-    voice-activity mask therefore replaces too much of a clean render. The mask
-    below is driven exclusively by the requested pitch delta and DurationTier
-    factors, with short fades at their boundaries.
+    Praat 重合成即使音高点不变也会改变相位。因此声活动遮罩会替换掉过多干净渲染。下面的遮罩完全由请求的音高差值和 DurationTier 因子驱动，并在边界处加上短淡入淡出。
     """
     import numpy as np
 
@@ -1296,7 +1264,7 @@ def _blend_resynthesis(
     mix: "np.ndarray",
     sample_rate: int,
 ) -> "np.ndarray":
-    """Crossfade PSOLA without the short level holes caused by phase cancellation."""
+    """交叉淡化 PSOLA，同时避免相位抵消造成的短暂电平空洞。"""
     import numpy as np
     from scipy.ndimage import gaussian_filter1d, uniform_filter1d
 
@@ -1355,7 +1323,7 @@ def _blend_resynthesis(
         gain = np.sqrt((target_power + 1e-12) / (blend_power + 1e-12))
         gain = np.clip(gain, 1.0, max_gain)
         gain = gaussian_filter1d(gain, sigma=smooth_sigma, mode="nearest")
-        # Keep unity gain at both ends and inside the fully wet region.
+        # 在两端以及完全湿润的区域内保持单位增益。
         gain = 1.0 + (gain - 1.0) * 4.0 * local_curve * (1.0 - local_curve)
         offset_start = start - local_start
         offset_end = end - local_start
@@ -1452,8 +1420,7 @@ def tune(
     source_times, source_frequencies = _tier_points(source_tier, call)
     reference_times, reference_frequencies = _tier_points(reference_tier, call)
     if alignment_stats["guide_points"] >= 3:
-        # PitchTier lives in source time. Invert the source-to-reference timing map so
-        # each reference F0 point guides the source event that will land at that time.
+        # PitchTier 处在源时间轴上。把源到参考的时序映射反过来，这样每个参考 F0 点都会引导那个会在该时刻落点的源事件。
         reference_times = np.interp(
             reference_times,
             guide_target_points,
@@ -1587,7 +1554,7 @@ def main() -> int:
             flush=True,
         )
         return 0
-    except Exception as exc:  # noqa: BLE001 - concise subprocess boundary
+    except Exception as exc:  # noqa: BLE001 - 保持子进程边界简洁
         print(f"VOCAL_TUNE_ERR {exc}", flush=True)
         traceback.print_exc()
         return 1

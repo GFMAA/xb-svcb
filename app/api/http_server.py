@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
+import re
 import secrets
 import socket
 import threading
@@ -39,6 +41,8 @@ if TYPE_CHECKING:
 
 
 UPLOAD_CHUNK_BYTES = 1024 * 1024
+DEFAULT_HTTP_PORT = 8760
+API_KEY_PREFIX = "XB-SVCB-"
 SUPPORTED_MEDIA_SUFFIXES = {
     ".aac",
     ".flac",
@@ -78,7 +82,7 @@ from pathlib import Path
 
 import requests
 
-BASE_URL = "http://127.0.0.1:8765"
+BASE_URL = "http://127.0.0.1:8760"
 API_KEY = "替换为软件 API 接入页显示的密钥"
 SOURCE_AUDIO = Path("song.wav")
 REFERENCE_AUDIO = Path("reference.wav")  # 只有 SeedVC 需要
@@ -492,7 +496,7 @@ UPLOAD_API_DOC = _api_operation_description(
         ("size", "integer", "已接收的文件字节数"),
     ],
     '{"upload_id": "0123456789abcdef0123456789abcdef", "filename": "song.wav", "size": 48203144}',
-    request_example='curl -X POST "http://127.0.0.1:8765/api/v1/uploads" -H "X-API-Key: YOUR_KEY" -F "file=@song.wav"',
+    request_example='curl -X POST "http://127.0.0.1:8760/api/v1/uploads" -H "X-API-Key: YOUR_KEY" -F "file=@song.wav"',
     request_example_language="bash",
     note="接口没有固定文件大小上限，实际容量取决于磁盘剩余空间；调用方应关闭请求超时或设置足够长的超时。",
 )
@@ -1742,7 +1746,36 @@ def _resolve_upload(upload_id: str) -> Path:
     return matches[0]
 
 
-def create_http_app(facade: "Api", api_key: str) -> FastAPI:
+def _normalize_key_records(api_key_or_records: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if isinstance(api_key_or_records, str):
+        return [{"secret": api_key_or_records, "enabled": True, "expires_at": None}]
+    return [dict(record) for record in api_key_or_records if isinstance(record, dict)]
+
+
+def _is_key_expired(record: dict[str, Any]) -> bool:
+    expires_at = record.get("expires_at")
+    if not expires_at:
+        return False
+    try:
+        expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        return expiry <= datetime.now(timezone.utc)
+    except ValueError:
+        return True
+
+
+def _key_is_active(record: dict[str, Any], value: str) -> bool:
+    if not record.get("enabled", True) or _is_key_expired(record):
+        return False
+    secret = str(record.get("secret") or "")
+    return bool(secret) and secrets.compare_digest(secret, value)
+
+
+def create_http_app(
+    facade: "Api",
+    api_key_or_records: str | list[dict[str, Any]],
+) -> FastAPI:
     """构建 HTTP 应用；与桌面桥复用同一个业务服务实例。"""
     app = FastAPI(
         title="XB-SVCB API",
@@ -1772,9 +1805,10 @@ def create_http_app(facade: "Api", api_key: str) -> FastAPI:
     )
 
     api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+    api_key_records = _normalize_key_records(api_key_or_records)
 
     def require_api_key(value: str | None = Security(api_key_header)) -> None:
-        if not value or not secrets.compare_digest(value, api_key):
+        if not value or not any(_key_is_active(record, value) for record in api_key_records):
             raise HTTPException(status_code=401, detail="API Key 无效")
 
     @app.get(
@@ -2983,19 +3017,122 @@ class HttpApiServer:
         self._last_error = ""
         self._ensure_config()
 
+    @staticmethod
+    def _normalize_domain(value: Any) -> str:
+        domain = str(value or "").strip().lower()
+        domain = re.sub(r"^https?://", "", domain)
+        domain = domain.split("/", 1)[0].strip().rstrip(".")
+        return domain
+
+    @classmethod
+    def _valid_domain(cls, value: Any) -> str | None:
+        domain = cls._normalize_domain(value)
+        if not domain:
+            return ""
+        if len(domain) > 253 or any(
+            not label or len(label) > 63 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+            for label in domain.split(".")
+        ):
+            return None
+        return domain
+
+    @staticmethod
+    def _new_api_key() -> str:
+        return f"{API_KEY_PREFIX}{secrets.token_urlsafe(32)}"
+
+    @staticmethod
+    def _new_key_id() -> str:
+        return f"key_{uuid.uuid4().hex[:12]}"
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    @classmethod
+    def _normalize_expiry(cls, value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        raw = str(value).strip().replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError as exc:
+            raise ValueError("Invalid expiry datetime") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    @classmethod
+    def _normalize_key_record(cls, value: Any, index: int = 0) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        secret = str(value.get("secret") or value.get("api_key") or "").strip()
+        if len(secret) < 16:
+            return None
+        try:
+            expires_at = cls._normalize_expiry(value.get("expires_at"))
+        except ValueError:
+            expires_at = None
+        return {
+            "id": str(value.get("id") or cls._new_key_id()),
+            "name": str(value.get("name") or f"API Key {index + 1}").strip() or f"API Key {index + 1}",
+            "secret": secret,
+            "enabled": bool(value.get("enabled", True)),
+            "expires_at": expires_at,
+            "created_at": str(value.get("created_at") or cls._now_iso()),
+        }
+
+    @staticmethod
+    def _public_key(record: dict[str, Any]) -> dict[str, Any]:
+        return {**record, "expired": _is_key_expired(record)}
+
     def _ensure_config(self) -> dict[str, Any]:
         current = self._settings.get(self.SETTINGS_KEY, {}) or {}
         scope = current.get("scope") if current.get("scope") in ("local", "lan") else "local"
         try:
-            port = int(current.get("port", 8765))
+            port = int(current.get("port", DEFAULT_HTTP_PORT))
         except (TypeError, ValueError):
-            port = 8765
+            port = DEFAULT_HTTP_PORT
         if not 1024 <= port <= 65535:
-            port = 8765
-        api_key = str(current.get("api_key") or "")
-        if len(api_key) < 16:
-            api_key = secrets.token_urlsafe(32)
-        normalized = {"scope": scope, "port": port, "api_key": api_key}
+            port = DEFAULT_HTTP_PORT
+        domain = self._valid_domain(current.get("domain")) or ""
+        if scope == "local":
+            domain = ""
+
+        raw_records = current.get("api_keys")
+        records: list[dict[str, Any]] = []
+        if isinstance(raw_records, list):
+            records = [
+                normalized
+                for index, item in enumerate(raw_records)
+                if (normalized := self._normalize_key_record(item, index)) is not None
+            ]
+        legacy_key = str(current.get("api_key") or "").strip()
+        if not records and len(legacy_key) >= 16:
+            records = [{
+                "id": self._new_key_id(),
+                "name": "Default API Key",
+                "secret": legacy_key,
+                "enabled": True,
+                "expires_at": None,
+                "created_at": self._now_iso(),
+            }]
+        if not records:
+            records = [{
+                "id": self._new_key_id(),
+                "name": "Default API Key",
+                "secret": self._new_api_key(),
+                "enabled": True,
+                "expires_at": None,
+                "created_at": self._now_iso(),
+            }]
+        primary = next((item for item in records if item["enabled"] and not _is_key_expired(item)), records[0])
+        normalized = {
+            "scope": scope,
+            "port": port,
+            "domain": domain,
+            "api_key": primary["secret"],
+            "api_keys": records,
+        }
         if normalized != current:
             self._settings.set(self.SETTINGS_KEY, normalized)
         return normalized
@@ -3015,16 +3152,91 @@ class HttpApiServer:
                 port = 0
             if not 1024 <= port <= 65535:
                 return {**self.status(), "ok": False, "error": "端口必须在 1024 到 65535 之间"}
-            updated = {**current, "scope": scope, "port": port}
+            if scope == "local":
+                domain = ""
+            else:
+                raw_domain = payload.get("domain", current["domain"])
+                domain = self._valid_domain(raw_domain)
+                if domain is None:
+                    return {**self.status(), "ok": False, "error": "???????????? test.juzidc.cn ????"}
+            updated = {**current, "scope": scope, "port": port, "domain": domain}
             self._settings.set(self.SETTINGS_KEY, updated)
             return {**self.status(), "ok": True}
 
+    def _mutation_blocked(self) -> str | None:
+        return "Stop the API service before editing keys" if self._is_running() else None
+
+    def list_keys(self) -> dict[str, Any]:
+        with self._lock:
+            current = self._ensure_config()
+            return {"ok": True, "items": [self._public_key(item) for item in current["api_keys"]]}
+
+    def create_key(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        with self._lock:
+            if (error := self._mutation_blocked()):
+                return {"ok": False, "error": error}
+            current = self._ensure_config()
+            payload = payload or {}
+            try:
+                expires_at = self._normalize_expiry(payload.get("expires_at"))
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            record = {
+                "id": self._new_key_id(),
+                "name": str(payload.get("name") or f"API Key {len(current['api_keys']) + 1}").strip(),
+                "secret": self._new_api_key(),
+                "enabled": bool(payload.get("enabled", True)),
+                "expires_at": expires_at,
+                "created_at": self._now_iso(),
+            }
+            record["name"] = record["name"] or f"API Key {len(current['api_keys']) + 1}"
+            current["api_keys"].append(record)
+            self._settings.set(self.SETTINGS_KEY, current)
+            return {"ok": True, "key": self._public_key(record), "items": [self._public_key(item) for item in current["api_keys"]]}
+
+    def update_key(self, key_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        with self._lock:
+            if (error := self._mutation_blocked()):
+                return {"ok": False, "error": error}
+            current = self._ensure_config()
+            record = next((item for item in current["api_keys"] if item["id"] == key_id), None)
+            if record is None:
+                return {"ok": False, "error": "API Key not found"}
+            payload = payload or {}
+            try:
+                if "expires_at" in payload:
+                    record["expires_at"] = self._normalize_expiry(payload.get("expires_at"))
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            if "name" in payload:
+                record["name"] = str(payload.get("name") or "").strip() or record["name"]
+            if "enabled" in payload:
+                record["enabled"] = bool(payload["enabled"])
+            self._settings.set(self.SETTINGS_KEY, current)
+            return {"ok": True, "key": self._public_key(record), "items": [self._public_key(item) for item in current["api_keys"]]}
+
+    def delete_key(self, key_id: str) -> dict[str, Any]:
+        with self._lock:
+            if (error := self._mutation_blocked()):
+                return {"ok": False, "error": error}
+            current = self._ensure_config()
+            if len(current["api_keys"]) <= 1:
+                return {"ok": False, "error": "At least one API Key must remain"}
+            remaining = [item for item in current["api_keys"] if item["id"] != key_id]
+            if len(remaining) == len(current["api_keys"]):
+                return {"ok": False, "error": "API Key not found"}
+            current["api_keys"] = remaining
+            current["api_key"] = remaining[0]["secret"]
+            self._settings.set(self.SETTINGS_KEY, current)
+            return {"ok": True, "items": [self._public_key(item) for item in remaining]}
+
     def regenerate_key(self) -> dict[str, Any]:
         with self._lock:
-            if self._is_running():
-                return {**self.status(), "ok": False, "error": "请先停止 API 服务再更新密钥"}
+            if (error := self._mutation_blocked()):
+                return {**self.status(), "ok": False, "error": error}
             current = self._ensure_config()
-            current["api_key"] = secrets.token_urlsafe(32)
+            current["api_keys"][0]["secret"] = self._new_api_key()
+            current["api_key"] = current["api_keys"][0]["secret"]
             self._settings.set(self.SETTINGS_KEY, current)
             return {**self.status(), "ok": True}
 
@@ -3046,7 +3258,7 @@ class HttpApiServer:
                 self._last_error = f"端口 {port} 无法使用：{exc}"
                 return {**self.status(), "ok": False, "error": self._last_error}
 
-            app = create_http_app(self._facade, current["api_key"])
+            app = create_http_app(self._facade, current["api_keys"])
             uvicorn_config = uvicorn.Config(
                 app,
                 host=host,
@@ -3146,7 +3358,8 @@ class HttpApiServer:
         status = self.status()
         if not status["running"]:
             return False
-        return bool(webbrowser.open(f"http://127.0.0.1:{status['port']}/{path}"))
+        base_url = status["domain_url"] or f"http://127.0.0.1:{status['port']}"
+        return bool(webbrowser.open(f"{base_url}/{path}"))
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -3154,21 +3367,31 @@ class HttpApiServer:
             running = self._is_running()
             port = int(current["port"])
             local_url = f"http://127.0.0.1:{port}"
+            domain_url = f"http://{current['domain']}:{port}" if current["domain"] else ""
             urls = [local_url]
             if current["scope"] == "lan":
                 for address in self._lan_addresses():
                     url = f"http://{address}:{port}"
                     if url not in urls:
                         urls.append(url)
+                if domain_url and domain_url not in urls:
+                    urls.append(domain_url)
+            docs_base = domain_url or local_url
             return {
                 "running": running,
                 "scope": current["scope"],
                 "host": "0.0.0.0" if current["scope"] == "lan" else "127.0.0.1",
                 "port": port,
-                "api_key": current["api_key"],
+                "domain": current["domain"],
+                "domain_url": domain_url,
+                "api_key": next(
+                    (item["secret"] for item in current["api_keys"] if item["enabled"] and not _is_key_expired(item)),
+                    current["api_keys"][0]["secret"],
+                ),
+                "api_keys": [self._public_key(item) for item in current["api_keys"]],
                 "base_urls": urls,
-                "docs_url": f"{local_url}/docs",
-                "redoc_url": f"{local_url}/redoc",
+                "docs_url": f"{docs_base}/docs",
+                "redoc_url": f"{docs_base}/redoc",
                 "last_error": self._last_error,
             }
 
